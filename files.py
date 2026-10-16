@@ -1,8 +1,9 @@
 """
-Two file nodes:
+Three file nodes:
 
-  TxtReadFile  - reads a text file and outputs its content.
-  TxtWriteFile - writes (or appends) its text input to a file and outputs what it wrote. See the class docstring.
+  TxtReadFile  - reads a text file and outputs its content (and an `errors` text; it never stops the run).
+  TxtWriteFile - writes (or appends) its text input to a file and outputs what it wrote and the full path.
+  ListFiles    - lists the files of a folder (optionally only some suffixes) and outputs one of them or all of them.
 
 TxtReadFile
 
@@ -13,8 +14,8 @@ The node has no inputs: type (or paste) the path of the file into its `path` fie
   * A relative path is looked up from ComfyUI's working directory, then in ComfyUI's input folder.
   * Encodings: UTF-8 (with or without BOM), UTF-16 / UTF-32 with a BOM, otherwise Windows-1252. Line endings are
     normalised to "\\n".
-  * The node re-runs when the file changes (its modification time / size are part of IS_CHANGED), and is reused
-    from ComfyUI's cache otherwise.
+  * Nothing is cached: the file is read again on every run, so the newest content is always used.
+  * Errors never stop the run: `text` is empty and the `errors` output holds the message (empty when all is well).
 
 Safety: the node reads any file the ComfyUI process may read. If ComfyUI is reachable by other people, restrict it
 with the environment variable TXTREADFILE_ALLOWED_DIRS (folders separated by ";" on Windows / ":" elsewhere): only
@@ -24,6 +25,7 @@ files inside those folders can be read then. TXTREADFILE_MAX_MB (default 64) lim
 import codecs
 import importlib
 import os
+import re
 
 _BOMS = (
     (codecs.BOM_UTF32_LE, "utf-32"),  # checked before UTF-16 LE: its BOM starts with the same two bytes
@@ -70,7 +72,7 @@ def _allowed_dirs(variable="TXTREADFILE_ALLOWED_DIRS"):
     return [os.path.realpath(d.strip()) for d in raw.split(os.pathsep) if d.strip()]
 
 
-def _check_allowed(path: str, variable="TXTREADFILE_ALLOWED_DIRS") -> None:
+def _check_allowed(path: str, variable="TXTREADFILE_ALLOWED_DIRS", tag=None) -> None:
     allowed = _allowed_dirs(variable)
     if not allowed:
         return
@@ -81,7 +83,7 @@ def _check_allowed(path: str, variable="TXTREADFILE_ALLOWED_DIRS") -> None:
                 return
         except ValueError:  # another drive
             continue
-    tag = "TxtWriteFile" if variable.startswith("TXTWRITEFILE") else "TxtReadFile"
+    tag = tag or ("TxtWriteFile" if variable.startswith("TXTWRITEFILE") else "TxtReadFile")
     raise PermissionError(f"[{tag}] '{path}' is outside the folders allowed by {variable}")
 
 
@@ -117,30 +119,37 @@ def read_text_file(raw_path) -> str:
     return decode_text(data).replace("\r\n", "\n").replace("\r", "\n")
 
 
+def error_message(tag: str, error: Exception) -> str:
+    """A readable one-line message, always starting with the node's tag."""
+    text = str(error).strip()
+    if text.startswith(f"[{tag}]"):
+        return text
+    return f"[{tag}] {type(error).__name__}: {text}"
+
+
 class TxtReadFile:
     @classmethod
     def INPUT_TYPES(cls):
         # No sockets: just a text field for the path.
         return {"required": {"path": ("STRING", {"default": "", "multiline": False, "placeholder": "C:\\path\\to\\file.txt"})}}
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("text",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("text", "errors")
     FUNCTION = "read"
     CATEGORY = "MultiTabText"
 
     @classmethod
-    def IS_CHANGED(cls, path="", **kwargs):
-        # Same file, same modification time and size -> same result: ComfyUI may reuse its cached output.
-        # A missing / unreadable file always re-runs, so the error is shown again.
-        try:
-            resolved = resolve_path(path)
-            stat = os.stat(resolved)
-            return f"{resolved}|{stat.st_mtime_ns}|{stat.st_size}"
-        except Exception:
-            return float("nan")
+    def IS_CHANGED(cls, **kwargs):
+        # NaN never equals itself: ComfyUI runs the node on every queue, so the file is always read again.
+        return float("nan")
 
     def read(self, path=""):
-        return (read_text_file(path),)
+        try:
+            return (read_text_file(path), "")
+        except Exception as error:  # every problem ends up in the `errors` output instead of stopping the run
+            message = error_message("TxtReadFile", error)
+            print(message, flush=True)  # also visible in the console, in case `errors` is not connected
+            return ("", message)
 
 
 def _output_dir():
@@ -163,8 +172,13 @@ def resolve_write_path(raw) -> str:
 
 
 def write_text_file(raw_path, text, overwrite=False, new_line=True) -> str:
+    """Write `text` to the file and return it (see write_text_file_at for the full path as well)."""
+    return write_text_file_at(raw_path, text, overwrite, new_line)[0]
+
+
+def write_text_file_at(raw_path, text, overwrite=False, new_line=True):
     """
-    Write `text` to the file and return it.
+    Write `text` to the file. Returns (text, full path of the file).
       overwrite: the file content is replaced (written to a temporary file first, so a failure never leaves a
                  half-written file). Otherwise `text` is appended to the end of the file.
       new_line:  only when appending to a file that already has content: a line break is written before `text`.
@@ -192,7 +206,7 @@ def write_text_file(raw_path, text, overwrite=False, new_line=True) -> str:
                 handle.write(("\n" if new_line and has_content else "") + text)
     except OSError as error:
         raise OSError(f"[TxtWriteFile] could not write '{path}': {error}") from error
-    return text
+    return text, path
 
 
 class TxtWriteFile:
@@ -204,7 +218,8 @@ class TxtWriteFile:
       new_line   (append mode) on: a line break is written before the appended text, so it starts on a new line.
                  Nothing is added when the file is new or empty. Ignored in overwrite mode.
 
-    The output is the text that was written (without the added line break), so it can be passed on.
+    Outputs: `text` is the text that was written (without the added line break), so it can be passed on;
+    `full_path` is the full path of the file that was written to.
 
     The node always runs when it is part of the queued workflow, even if nothing is connected to its output. In
     append mode it runs on every queue (each run appends); in overwrite mode it runs when the text, the path or the
@@ -225,8 +240,8 @@ class TxtWriteFile:
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("text",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("text", "full_path")
     FUNCTION = "write"
     CATEGORY = "MultiTabText"
     OUTPUT_NODE = True  # runs even when its output is not used (it exists for its side effect)
@@ -238,8 +253,150 @@ class TxtWriteFile:
         return "" if overwrite else float("nan")
 
     def write(self, text="", path="", overwrite=False, new_line=True):
-        return (write_text_file(path, text, bool(overwrite), bool(new_line)),)
+        return write_text_file_at(path, text, bool(overwrite), bool(new_line))
 
 
-NODE_CLASS_MAPPINGS = {"TxtReadFile": TxtReadFile, "TxtWriteFile": TxtWriteFile}
-NODE_DISPLAY_NAME_MAPPINGS = {"TxtReadFile": "TxtReadFile", "TxtWriteFile": "TxtWriteFile"}
+# ---------------------------------------------------------------------------------------------------------------------
+# ListFiles
+# ---------------------------------------------------------------------------------------------------------------------
+MODE_SINGLE = "single file"
+MODE_LIST = "list of files"
+
+
+def parse_suffixes(raw) -> tuple:
+    """
+    ".png, .jpg" -> (".png", ".jpg"). Separate several suffixes with comma, semicolon or new line.
+    Case does not matter. A bare word is an extension ("png" = ".png"); "*.png" = ".png"; longer endings such
+    as "_final.png" are used as they are. No suffix at all means every file.
+    """
+    suffixes = []
+    for part in re.split(r"[,;\n]", str(raw or "")):
+        item = part.strip().strip("\"'").lstrip("*").lower()
+        if not item:
+            continue
+        if item.isalnum():
+            item = "." + item
+        suffixes.append(item)
+    return tuple(suffixes)
+
+
+def _natural_key(name: str):
+    # "img2" before "img10"; the parts alternate text / number, so the tuples always compare like with like
+    return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", name)] + [name]
+
+
+def resolve_directory(raw) -> str:
+    path = clean_path(raw)
+    if not path:
+        raise ValueError("[ListFiles] no folder path given")
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+    candidates = [os.path.abspath(path)]  # relative to ComfyUI's working directory, then its input folder
+    input_dir = _input_dir()
+    if input_dir:
+        candidates.append(os.path.abspath(os.path.join(input_dir, path)))
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+
+def list_matching_files(raw_path, raw_suffix="") -> list:
+    """Full paths of the files directly inside the folder, in natural order. Sub folders and hidden files are skipped."""
+    folder = resolve_directory(raw_path)
+    _check_allowed(folder, tag="ListFiles")  # the same folders as TxtReadFile may be listed (TXTREADFILE_ALLOWED_DIRS)
+    if not os.path.exists(folder):
+        raise FileNotFoundError(f"[ListFiles] folder not found: {folder}")
+    if not os.path.isdir(folder):
+        raise NotADirectoryError(f"[ListFiles] not a folder: {folder}")
+    suffixes = parse_suffixes(raw_suffix)
+    names = []
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_file():
+                continue
+            if suffixes and not entry.name.lower().endswith(suffixes):
+                continue
+            names.append(entry.name)
+    names.sort(key=_natural_key)
+    return [os.path.join(folder, name) for name in names]
+
+
+def select_files(files: list, mode: str, index: int, wrap: bool) -> list:
+    """All files in list mode, otherwise the one at `index` (wrapped around the number of files when `wrap` is on)."""
+    if mode == MODE_LIST:
+        return list(files)
+    index = int(index)
+    if wrap:
+        index %= len(files)
+    elif not 0 <= index < len(files):
+        raise IndexError(
+            f"[ListFiles] index {index} is out of range: {len(files)} file(s) found, valid indexes are 0 to {len(files) - 1} "
+            f"(switch on wrap to wrap the index around)"
+        )
+    return [files[index]]
+
+
+class ListFiles:
+    """
+    Lists the files of a folder and outputs one of them or all of them.
+
+      path    the folder. Relative paths are looked up from ComfyUI's working directory, then its input folder.
+      suffix  only files ending like this (".png", or several: ".png, .jpg", or longer endings such as "_final.png").
+              Empty = every file. Case does not matter. Sub folders and hidden files (".name") are never listed.
+      mode    "single file": the file at `index`.  "list of files": every matching file.
+      index   which of the found files (0 = the first, files are in natural order: img2 before img10).
+              Has "control after generate" in ComfyUI, so it can count up by itself on every queue.
+      wrap    on: an index past the last file wraps around to the start (index % number of files).
+              off: an index out of range is reported in `errors`.
+
+    Outputs (full paths):
+      files   the selected file(s) as a ComfyUI LIST: with "list of files" the nodes after it run once per file.
+      text    the same file(s) as one text, one path per line.
+      count   how many files matched the suffix (not only the selected ones).
+      errors  empty when all is well, otherwise the message; the run is never stopped.
+    The folder is listed again on every run.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "path": ("STRING", {"default": "", "multiline": False, "placeholder": "C:\\path\\to\\folder"}),
+                "suffix": ("STRING", {"default": "", "multiline": False, "placeholder": ".png, .jpg   (empty = all files)"}),
+                "mode": ([MODE_SINGLE, MODE_LIST], {"default": MODE_SINGLE}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 1000000000, "step": 1, "control_after_generate": True}),
+                "wrap": ("BOOLEAN", {"default": True, "label_on": "wrap index around", "label_off": "no wrap (error if too big)"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "INT", "STRING")
+    RETURN_NAMES = ("files", "text", "count", "errors")
+    OUTPUT_IS_LIST = (True, False, False, False)
+    FUNCTION = "list_files"
+    CATEGORY = "MultiTabText"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")  # the folder can change at any time: list it again on every queue
+
+    def list_files(self, path="", suffix="", mode=MODE_SINGLE, index=0, wrap=True):
+        count = 0
+        try:
+            found = list_matching_files(path, suffix)
+            count = len(found)
+            if not found:
+                suffixes = parse_suffixes(suffix)
+                what = f" ending with {', '.join(suffixes)}" if suffixes else ""
+                raise LookupError(f"[ListFiles] no files{what} found in {resolve_directory(path)}")
+            chosen = select_files(found, mode, index, bool(wrap))
+            return (chosen, "\n".join(chosen), count, "")
+        except Exception as error:  # every problem ends up in the `errors` output instead of stopping the run
+            message = error_message("ListFiles", error)
+            print(message, flush=True)
+            # list mode: an empty list; single mode: one empty path, so the nodes after it still run once
+            return ([] if mode == MODE_LIST else [""], "", count, message)
+
+
+NODE_CLASS_MAPPINGS = {"TxtReadFile": TxtReadFile, "TxtWriteFile": TxtWriteFile, "ListFiles": ListFiles}
+NODE_DISPLAY_NAME_MAPPINGS = {"TxtReadFile": "TxtReadFile", "TxtWriteFile": "TxtWriteFile", "ListFiles": "ListFiles"}

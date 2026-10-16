@@ -22,7 +22,7 @@ import os
 import random
 import re
 
-BUILD = "2026-10-06.20"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
+BUILD = "2026-10-06.23"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
 
 # Set the environment variable MULTITABTEXT_DEBUG=1 before starting ComfyUI to log what each run receives.
 _DEBUG = os.environ.get("MULTITABTEXT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
@@ -456,7 +456,13 @@ def join_texts(parts, separator="comma") -> str:
 
 
 class RemoveTags:
-    """Removes or replaces tags. Inputs `text`, `text_2`, ... (dynamic) are concatenated first. Entries: `tag`, `old=(new)`, `old=({a|b|})`."""
+    """
+    Removes or replaces tags. Inputs `text`, `text_2`, ... (dynamic) are concatenated first. Entries: `tag`, `old=(new)`, `old=({a|b|})`.
+
+    support_comments (off by default): comments are ignored, in the texts AND in the tags box - lines starting with # or //,
+    and /* ... */ blocks (inline or over several lines). They are not part of the output and are not read as tags.
+    Every text is handled on its own, so an unclosed /* in one text never swallows another.
+    """
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -474,7 +480,12 @@ class RemoveTags:
                 "remove_empty_lines": ("BOOLEAN", {"default": False}),
                 # Kept last so workflows saved before this option existed still load correctly.
                 "separator": (list(SEPARATORS.keys()), {"default": "comma"}),
-            }
+            },
+            # Optional, so prompts / nodes made before this option existed (and the pass-through nodes the editor builds
+            # for a bypassed Remove Tags) are still valid without it.
+            "optional": {
+                "support_comments": ("BOOLEAN", {"default": False, "label_on": "comments on", "label_off": "comments off"}),
+            },
         }
 
     RETURN_TYPES = ("STRING",)
@@ -488,7 +499,7 @@ class RemoveTags:
         return float("nan") if "{" in (tags or "") else ""
 
     def run(self, text, tags, case_sensitive=False, whole_words_only=True, clean_separators=True,
-            remove_empty_lines=False, separator="comma", **kwargs):
+            remove_empty_lines=False, separator="comma", support_comments=False, **kwargs):
         # Extra inputs text_2, text_3, ... are added dynamically by the frontend (web/multi_tab_text.js).
         text = "" if text is None else text
         extras = []
@@ -497,7 +508,10 @@ class RemoveTags:
             if m:
                 extras.append((int(m.group(1)), value))
         parts = [text] + [v for _, v in sorted(extras, key=lambda kv: kv[0])]
-        combined = join_texts(parts, separator) if len(parts) > 1 else text
+        if support_comments:  # each text on its own, before they are joined; the tags box too
+            parts = [strip_comments(str(p)) if p is not None else p for p in parts]
+            tags = strip_comments(tags or "")
+        combined = join_texts(parts, separator) if len(parts) > 1 else parts[0]
         return (remove_tags(combined, tags, bool(case_sensitive), bool(whole_words_only),
                             bool(clean_separators), bool(remove_empty_lines)),)
 

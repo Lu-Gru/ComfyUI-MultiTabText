@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] frontend extension loaded (build 2026-10-06.20)");
+console.log("[MultiTabText] frontend extension loaded (build 2026-10-06.23)");
 
 const NODE_NAME = "RandomTextTabs";
 const DATA_WIDGET = "tabs_data";
@@ -459,6 +459,27 @@ function createEditor(node, dataWidget) {
     loadActive();
   };
 
+  // "Tab 1 copy", "Tab 1 copy 2", ... (a name that is not used yet)
+  const copyName = (name) => {
+    const used = new Set(state.tabs.map((t) => t.name));
+    const base = name.replace(/ copy( \d+)?$/, "") + " copy"; // a copy of a copy stays "X copy 2", not "X copy copy"
+    let candidate = base;
+    for (let n = 2; used.has(candidate); n++) candidate = `${base} ${n}`;
+    return candidate;
+  };
+
+  // Copy the active tab (name, text) right behind it and switch to the copy. The copy is not ticked, so the output of
+  // the node does not double by accident.
+  const duplicateTab = () => {
+    const source = state.tabs[state.active];
+    state.tabs.splice(state.active + 1, 0, { name: copyName(source.name), text: source.text, checked: false });
+    state.active += 1;
+    save();
+    renderTabs();
+    loadActive();
+    ta.focus();
+  };
+
   const moveTab = (from, to) => {
     const activeTab = state.tabs[state.active];
     const [t] = state.tabs.splice(from, 1);
@@ -576,6 +597,8 @@ function createEditor(node, dataWidget) {
     toolbar.append(b);
     return b;
   };
+
+  btn("Duplicate tab", "Copy the active tab (name and text) right after it", duplicateTab);
 
   btn("Export tab", "Save the current tab as a .txt file", () => {
     const tab = state.tabs[state.active];
@@ -825,6 +848,10 @@ const isMainNode = (n) => n?.comfyClass === MAIN_NODE_TYPE;
 const hasTextLinks = (n) => (n.inputs ?? []).some((i) => TEXT_INPUT_RE.test(i.name) && i.link != null);
 // A MUTED or BYPASSED MultiTabText that has connected texts still outputs them (concatenated); muting / bypassing
 // just switches off its own tabs. Without connected texts, a bypassed one outputs an empty text.
+const isTagsNode = (n) => n?.type === "RemoveTags";
+// A BYPASSED Remove Tags node passes its connected texts through unchanged (no tags removed or replaced), joined with
+// its own `separator` setting; with nothing connected it passes an empty text. ComfyUI alone would pass only the first one.
+const isPassThroughTags = (n) => isTagsNode(n) && n.mode === MODE_BYPASS;
 const isUsableOffMain = (n) => isMainNode(n) && (n.mode === MODE_NEVER || n.mode === MODE_BYPASS) && hasTextLinks(n);
 
 // Follow an input link through bypassed pass-through nodes; return the MultiTabText node feeding it that needs
@@ -835,6 +862,7 @@ function findBypassedSource(graph, node, slot) {
     const origin = graph.getNodeById(link.origin_id);
     if (!origin) return null;
     if (isMainNode(origin) && (origin.mode === MODE_BYPASS || isUsableOffMain(origin))) return origin;
+    if (isPassThroughTags(origin)) return origin;
     if (origin.mode !== MODE_BYPASS) return null; // normal node: already handled by ComfyUI
     const idx = origin.inputs?.findIndex(
       (i) => i.link != null && (i.type === link.type || i.type === "*" || link.type === "*")
@@ -852,7 +880,7 @@ function resolveTextSource(graph, out, linkId, ensure) {
   for (let guard = 0; link && guard < 100; guard++) {
     const origin = graph.getNodeById(link.origin_id);
     if (!origin) return null;
-    if (isUsableOffMain(origin)) {
+    if (isUsableOffMain(origin) || isPassThroughTags(origin)) {
       const sid = ensure(origin);
       return sid ? [sid, 0] : null;
     }
@@ -884,7 +912,7 @@ function ensureOffMain(graph, out, node, building = new Set()) {
   };
   for (const inp of node.inputs ?? []) {
     if (!TEXT_INPUT_RE.test(inp.name) || inp.link == null) continue;
-    const ref = resolveTextSource(graph, out, inp.link, (n) => ensureOffMain(graph, out, n, building));
+    const ref = resolveTextSource(graph, out, inp.link, (n) => ensureSpecial(graph, out, n, building));
     if (ref) inputs[inp.name] = ref;
   }
   out[id] = { class_type: MAIN_NODE_TYPE, inputs, _meta: { title: node.title || "MultiTabText (inputs only)" } };
@@ -892,11 +920,41 @@ function ensureOffMain(graph, out, node, building = new Set()) {
   return id;
 }
 
+// Add a bypassed Remove Tags to the prompt as a plain pass-through: no tags, no cleanup, its own separator.
+function ensureTagsPass(graph, out, node, building = new Set()) {
+  const id = String(node.id);
+  if (out[id]) return id;
+  if (building.has(id)) return null; // cycle guard
+  building.add(id);
+  const inputs = {
+    tags: "",
+    case_sensitive: false,
+    whole_words_only: true,
+    clean_separators: false,
+    remove_empty_lines: false,
+    separator: node.widgets?.find((w) => w.name === "separator")?.value ?? "comma",
+  };
+  for (const inp of node.inputs ?? []) {
+    if (!TEXT_INPUT_RE.test(inp.name) || inp.link == null) continue;
+    const ref = resolveTextSource(graph, out, inp.link, (n) => ensureSpecial(graph, out, n, building));
+    if (ref) inputs[inp.name] = ref;
+  }
+  if (inputs.text === undefined) inputs.text = ""; // required input: an empty text when nothing is connected / usable
+  out[id] = { class_type: "RemoveTags", inputs, _meta: { title: node.title || "Remove Tags (bypassed)" } };
+  building.delete(id);
+  return id;
+}
+
+// Build whichever special node this is (MultiTabText with connected texts, or a bypassed Remove Tags).
+function ensureSpecial(graph, out, node, building) {
+  return isTagsNode(node) ? ensureTagsPass(graph, out, node, building) : ensureOffMain(graph, out, node, building);
+}
+
 function injectBypassedMainNodes(result, graph) {
   const out = result?.output;
   if (!out || !graph) return result;
   const all = graph._nodes ?? graph.nodes ?? [];
-  if (!all.some((n) => isMainNode(n) && (n.mode === MODE_BYPASS || isUsableOffMain(n)))) return result; // nothing to do
+  if (!all.some((n) => isPassThroughTags(n) || (isMainNode(n) && (n.mode === MODE_BYPASS || isUsableOffMain(n))))) return result; // nothing to do
   for (const node of all) {
     if (node.mode === MODE_NEVER || node.mode === MODE_BYPASS) continue;
     const entry = out[String(node.id)];
@@ -907,7 +965,11 @@ function injectBypassedMainNodes(result, graph) {
       const src = findBypassedSource(graph, node, slot);
       if (!src) return;
       let sid;
-      if (isUsableOffMain(src)) {
+      if (isPassThroughTags(src)) {
+        // bypassed Remove Tags: its connected texts, unchanged (also for text inputs of Remove Tags / MultiTabText)
+        sid = ensureTagsPass(graph, out, src);
+        if (!sid) return;
+      } else if (isUsableOffMain(src)) {
         // muted / bypassed MultiTabText with connected texts: outputs those texts
         sid = ensureOffMain(graph, out, src);
         if (!sid) return;
@@ -931,7 +993,8 @@ function injectBypassedMainNodes(result, graph) {
   return result;
 }
 
-// RemoveTags: text inputs fed by a bypassed (or muted) node are ignored, not passed through.
+// RemoveTags / MultiTabText: text inputs fed by a bypassed (or muted) node are ignored, except when that node still has
+// text to give (a muted / bypassed MultiTabText with connected texts, a bypassed Remove Tags).
 // If nothing usable is left, the node still runs and outputs an empty string.
 function applyRemoveTagsRules(result, graph) {
   const out = result?.output;
@@ -946,7 +1009,7 @@ function applyRemoveTagsRules(result, graph) {
       if (!TEXT_INPUT_RE.test(inp.name) || inp.link == null) continue;
       const origin = graph.getNodeById(getLink(graph, inp.link)?.origin_id);
       // A muted / bypassed MultiTabText that still outputs its connected texts is a usable source.
-      if (origin && (origin.mode === MODE_BYPASS || origin.mode === MODE_NEVER) && !isUsableOffMain(origin)) {
+      if (origin && (origin.mode === MODE_BYPASS || origin.mode === MODE_NEVER) && !isUsableOffMain(origin) && !isPassThroughTags(origin)) {
         delete entry.inputs[inp.name];
       }
     }

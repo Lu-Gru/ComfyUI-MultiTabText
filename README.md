@@ -1,22 +1,18 @@
 # MultiTabText
 
-Five nodes for ComfyUI:
+Six nodes for ComfyUI:
 
 | Node | Purpose |
 |------|---------|
 | **MultiTabText** | A tabbed text editor with any number of optional text inputs. Supports comments, random `{a\|b\|c}` selectors and line numbers. Outputs the text of all checked tabs (or the active tab if none is checked). |
 | **MultiTabText Remove Tags** | Takes one or more text inputs, joins them, then removes or replaces tags. Replacements can be random. |
-| **TxtWriteFile** | Saves a text input to a file: overwrite it or append to it (optionally starting on a new line). Outputs the written text. |
-| **TxtReadFile** | Reads a text file and outputs its content. No inputs: type the path into the node. |
+| **TxtWriteFile** | Saves a text input to a file: overwrite it or append to it (optionally starting on a new line). Outputs the written text and the full path of the file. |
+| **ListFiles** | Lists the files of a folder (optionally only some suffixes) and outputs one of them (by index, with wrap-around) or all of them. |
+| **TxtReadFile** | Reads a text file and outputs its content and an `errors` text. No inputs: type the path into the node. The file is read again on every run. |
 | **MultiTabModels** | A tabbed model loader with sampler settings. Each tab picks a checkpoint and/or a diffusion model, a CLIP and a VAE like ComfyUI's own loader nodes, plus `steps`, `cfg`, `sampler_name`, `scheduler` and a LoRA text field (with comments). Outputs `MODEL`, `CLIP`, `VAE`, `steps`, `cfg`, `sampler_name`, `scheduler` and `LORA` of the active tab. Works with LoRA Manager. |
 
 Both nodes are in the add-node menu under **MultiTabText** (double-click the canvas and search for "MultiTabText").
 
----
-![mtremovetext.JPG](img/mtremovetext.JPG)
-![multitabmodels.JPG](img/multitabmodels.JPG)
-![multitabtext.JPG](img/multitabtext.JPG)
-![textfile.JPG](img/textfile.JPG)
 ---
 
 ## Installation
@@ -56,6 +52,7 @@ No extra Python packages are needed.
   - **+** adds a tab, **×** removes it (the last tab is reset instead of removed).
   - **Double-click** a tab name to rename it. Press Enter to confirm and Esc to cancel.
   - **Drag** a tab to reorder.
+  - **Duplicate tab** (toolbar) copies the active tab (name and text) right behind it and switches to the copy. The copy is called `Name copy` (`Name copy 2`, ... when that exists), and it is **not ticked**, so the output does not double by accident.
   - Each tab holds its own text and has a **checkbox**. **Every checked tab is output**, in tab order (left to right), joined with new lines. Each tab is processed on its own, so a comment or selector in one tab never affects another.
   - If **no tab is checked**, the **active** (selected) tab is output, so existing workflows behave as before.
 - **Line numbers** are shown beside the text.
@@ -190,6 +187,25 @@ Write one entry per line and/or separate entries with commas.
 | `whole_words_only` | on | `cat` does not match inside `category`. |
 | `clean_separators` | on | Removes doubled commas, leading and trailing commas, repeated spaces and empty `()` / `[]` left after removals. Works per line. |
 | `remove_empty_lines` | off | Removes empty lines from the result. |
+| `support_comments` | off | Comments are ignored: see below. |
+
+### Comments
+
+With **`support_comments`** switched on (the switch shows *comments on* / *comments off*), comments are ignored and are **not part of the output**. They work like in MultiTabText:
+
+```
+# a whole-line comment
+// also a whole-line comment
+a cat /* inline comment */ on a sofa
+/* a block comment
+   over several lines */
+```
+
+- **In the texts:** lines starting with `#` or `//`, and `/* ... */` blocks (inline or over several lines), are removed from every connected text before anything else happens. A line that held nothing but a comment disappears completely. Each text is handled on its own, so an unclosed `/*` only hides the rest of *its* text, never another input.
+- **In the `tags` box:** the same comments are ignored there, so you can annotate your rules. A commented-out rule such as `// dog=(wolf)` is not applied.
+- `#` and `//` only count at the **start of a line**, so `pic #cat here` and `http://example.com` are left alone in the text.
+- **Off by default.** While it is off nothing changes: a `tags` line starting with `#` is an ordinary tag (hashtags such as `#cat` keep working). Switch it on only when you want comments.
+- The switch does not change a **bypassed** Remove Tags: bypass passes the texts through exactly as they are.
 
 ### Example
 
@@ -202,6 +218,12 @@ best quality
 
 Possible output: `masterpiece, lion, tiger`.
 
+### Bypass
+
+If **Remove Tags** is **bypassed** (Ctrl+B), it **passes its text through unchanged**: no tags are removed or replaced and nothing is cleaned up. Several connected texts are joined with the node's own **separator** setting (comma, new line, space or none), exactly like when it is active; a single text passes through as it is. With nothing connected it passes an empty text. This works for nodes connected directly, through other bypassed nodes and through chains of bypassed Remove Tags nodes, and the text is used by the text inputs of other Remove Tags / MultiTabText nodes too (they do not ignore it). ComfyUI's own bypass would pass on only the first connected text.
+
+(A *muted* Remove Tags is simply left out of the run, like any muted node.)
+
 ### Bypassed or muted sources
 
 If a node feeding a `text` socket is bypassed or muted, that input is ignored and the remaining inputs are processed. If nothing is left, the node outputs an empty string.
@@ -210,15 +232,17 @@ If a node feeding a `text` socket is bypassed or muted, that input is ignored an
 
 ## TxtReadFile
 
-Reads a text file and outputs its content as text. The node has **no inputs and no sockets**: type (or paste) the path of the file into its `path` field and connect the `text` output wherever you need it.
+Reads a text file and outputs its content as text. The node has **no inputs and no sockets**: type (or paste) the path of the file into its `path` field.
 
+**Outputs:** `text` (the file content) and `errors` (empty when all went well, otherwise the message).
+
+- **Errors never stop the run.** A missing file, an empty path, a folder instead of a file, a file that is too large or one outside the allowed folders gives an **empty `text`** and the message in `errors` (for example `[TxtReadFile] file not found: C:\notes\prompts.txt`, always including the path it tried). The same message is printed in the ComfyUI console, so you notice it even when `errors` is not connected. Connect `errors` to a preview node to see it in the workflow.
+- **The file is read again on every run.** Nothing is cached, so the newest content is always used, even if the file was edited a moment ago. (This also means the nodes after it run again on every queue.)
 - **Paths:** an absolute path (`C:\notes\prompts.txt`, `/home/me/prompts.txt`) or a relative one. A relative path is looked up from ComfyUI's working directory first, then in ComfyUI's `input` folder, so a file you put into `input` can be used by its name alone. Quotes around the path are ignored (paths copied with *Copy as path* work as they are), and `~` and environment variables (`%USERPROFILE%`, `$HOME`) are expanded.
 - **Encodings:** UTF-8 (with or without BOM), UTF-16 and UTF-32 with a BOM, and Windows-1252 for older files. Line endings are normalised to `\n`. An empty file gives an empty text.
-- **Changes are picked up:** when the file is edited, the node runs again with the new content. While the file is unchanged, ComfyUI reuses the previous result and does not re-run the nodes after it.
-- **Errors:** an empty path, a missing file, a folder instead of a file, or a file that is too large stop the run with a message that includes the path it tried.
-- **Limits and safety:** the node can read any file the ComfyUI process may read. If other people can reach your ComfyUI, restrict it by setting the environment variable `TXTREADFILE_ALLOWED_DIRS` to the folders it may read from (separated by `;` on Windows and `:` elsewhere); files outside them, also via `..`, are refused. `TXTREADFILE_MAX_MB` sets the largest file size (default 64).
+- **Limits and safety:** the node can read any file the ComfyUI process may read. If other people can reach your ComfyUI, restrict it by setting the environment variable `TXTREADFILE_ALLOWED_DIRS` to the folders it may read from (separated by `;` on Windows and `:` elsewhere); files outside them, also via `..`, are refused (reported in `errors`). `TXTREADFILE_MAX_MB` sets the largest file size (default 64).
 
-Tip: connect `text` to the `text` input of **MultiTabText** or **MultiTabText Remove Tags** to combine a file with typed text or to remove / replace tags in it.
+Tip: in current ComfyUI frontends every text field also accepts a connection, so `path` can be fed by a text output, for example the `files` output of **ListFiles**, to read each file of a folder (if your ComfyUI version cannot do this, right-click the field and use *Convert Widget to Input*). Connect `text` to the `text` input of **MultiTabText** or **MultiTabText Remove Tags** to combine a file with typed text or to remove / replace tags in it.
 
 ## TxtWriteFile
 
@@ -232,7 +256,7 @@ Saves a text to a file. Connect the text to the `text` input, type the file's pa
 
 Both settings are ComfyUI's usual on / off switches; the node shows what each position does (`overwrite` / `append`, `new line before text` / `no new line`).
 
-- **Output:** the text that was written, exactly as it came in (without the added line break), so it can be passed on, for example to a preview.
+- **Outputs:** `text` is the text that was written, exactly as it came in (without the added line break), so it can be passed on, for example to a preview. `full_path` is the **full path of the file** that was written to (a relative `path` is shown resolved inside the output folder, `..` and quotes are resolved), for example to feed it to **TxtReadFile** or to show where the file went. When appending an empty text nothing is written, but the path is still reported.
 - **Runs without a connected output.** The node is a ComfyUI *output node*: it runs whenever it is part of the queued workflow, even if nothing is connected to its output.
 - **When it runs again:** in **append** mode it runs on **every queue**, so each run appends once. In **overwrite** mode ComfyUI skips it while the text, the path and the settings are unchanged (writing the same content again would change nothing); change any of them, or restart ComfyUI, to write again. Because append mode runs every time, connect its output to other nodes only if you need to.
 - **Details:** text is written as UTF-8 and line breaks are written exactly as given. Appending an empty text changes nothing (not even a line break); overwriting with an empty text empties the file. An overwrite is written to a temporary file first and then swapped in, so a failure never leaves a half-written file and the old content stays. If the text itself ends with a line break, `new_line` adds one more, giving a blank line.
@@ -240,6 +264,34 @@ Both settings are ComfyUI's usual on / off switches; the node shows what each po
 - **Safety:** the node can write any file the ComfyUI process may write. If other people can reach your ComfyUI, restrict it by setting the environment variable `TXTWRITEFILE_ALLOWED_DIRS` to the folders it may write to (separated by `;` on Windows and `:` elsewhere). Files outside them, also via `..` and also relative paths that end up outside, are refused. (`TXTREADFILE_ALLOWED_DIRS` is separate and only affects TxtReadFile.)
 
 Example: connect a text to `text`, set `path` to `logs/prompts.txt`, leave `overwrite` off and `new_line` on: every run adds the text as a new line at the end of `output/logs/prompts.txt`.
+
+## ListFiles
+
+Lists the files of a folder and outputs one of them or all of them, as full paths. No inputs: type the folder into `path`.
+
+| Setting | Meaning |
+|---------|---------|
+| `path` | The folder. A relative path is looked up from ComfyUI's working directory, then in ComfyUI's `input` folder. Quotes, `~` and environment variables are handled like in TxtReadFile. |
+| `suffix` | Only files whose name **ends** like this. `.png`, or several: `.png, .jpg` (comma, semicolon or new line). Capitals do not matter. A bare word is an extension (`png` = `.png`), `*.png` works too, and longer endings such as `_final.png` are used as they are. **Empty = every file.** |
+| `mode` | **single file:** one file, the one at `index`. **list of files:** every matching file (`index` is ignored). |
+| `index` | Which of the found files: `0` is the first. Files are in natural order (`img2` before `img10`). Like a seed, it has **control after generate**: set it to *increment* and every queue takes the next file. |
+| `wrap` | **on (default):** an `index` past the last file wraps around to the start, so `index` 7 with 5 files gives file 2 (the index is taken modulo the number of files) and an incrementing index loops forever. **off:** an index out of range is reported in `errors`. |
+
+**Outputs**
+
+| Output | Content |
+|--------|---------|
+| `files` | The selected file(s) as a ComfyUI **list**. In *list of files* mode the nodes after it run **once per file**; in *single file* mode they run once. |
+| `text` | The same path(s) as one text, one path per line (for nodes that need a single text). |
+| `count` | How many files matched the suffix (not only the selected ones). |
+| `errors` | Empty when all went well, otherwise the message. |
+
+- **Only files directly in the folder** are listed. Sub folders and hidden files (names starting with a dot) are skipped.
+- **Errors never stop the run.** A missing folder, a path that is not a folder, no matching file, or an index out of range (with `wrap` off) gives the message in `errors` (and in the console), `count` still tells how many files matched, and `files` is empty: one empty path in *single file* mode (so the nodes after it still run once), an empty list in *list of files* mode.
+- The folder is listed again on every run, so new files are seen at once.
+- `TXTREADFILE_ALLOWED_DIRS` (see TxtReadFile) restricts which folders may be listed.
+
+Examples: connect `files` to the `path` of **TxtReadFile** with `suffix` `.txt` and *list of files* to read every text file; or use *single file* with `index` on *increment* to go through the folder one file per queue.
 
 ## MultiTabModels
 
@@ -327,6 +379,7 @@ The editor flashes blue when something arrives. If LoRA Manager lists several co
 
 The same tab handling as MultiTabText:
 - **+** adds a tab, **×** removes it (the last tab is reset instead of removed), **double-click** renames, **drag** reorders.
+- **Duplicate tab** copies the active tab (every choice, the sampler settings and the LoRA text) right behind it and switches to the copy, named `Name copy` (`Name copy 2`, ...). It is an independent copy: changing it never changes the original.
 - **Export tab** saves the active tab (all groups, numbers included) as a `.json` file. **Import tab(s)** loads one or more such files, each into a new tab (an Export all file is accepted too and adds all its tabs).
 - **Export all** saves every tab to one `.json` file. **Import all** replaces all tabs, or adds them after the current ones when **Append on import** is ticked.
 - **Clear all** closes all tabs and resets the node to one default tab (asks first when there is more than one tab).
@@ -353,9 +406,10 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | Still no editor | Open the browser console (F12) and look for lines starting with `[MultiTabText]`. `frontend extension loaded` and `editor created` should appear. Send any red errors if not. |
 | A new checkbox or socket is missing on an existing node | Delete the node and add it again. |
 | "Send Gen Params to Workflow" does not offer MultiTabModels, or nothing changes in the tab | MultiTabModels must be active (not bypassed or muted). Reload the page once so LoRA Manager receives the node list. In the browser console (F12, level *Verbose*) you should see `[MultiTabText] told LoRA Manager about 1 MultiTabModels node(s)`, and `LoRA Manager sent steps = ...` for every parameter that arrives. If the node is still not offered, mark it yourself: right-click the node, *Mark as*, *Send Gen Params Target*. |
-| TxtReadFile stops with "file not found" | The message shows the path it tried. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
+| TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
+| ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-06.20) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-06.20)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-06.23) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-06.23)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
 | Nodes appear twice | An old copy of the package is still in `custom_nodes`. Remove it. |
 | Text lost after refresh | Make sure you are on the latest version, then hard-refresh. Use **Export all** for backups. |
 
@@ -366,12 +420,14 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 
 ## Feature summary
 
-**MultiTabText:** any number of optional text inputs that are added before or after the output ("In front" option); a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
+**MultiTabText:** a Duplicate tab button; any number of optional text inputs that are added before or after the output ("In front" option); a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
 
-**MultiTabModels:** tabs with a LoRA text field (output `LORA`, comments supported), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
+**MultiTabModels:** a Duplicate tab button; tabs with a LoRA text field (output `LORA`, comments supported), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
 
-**TxtWriteFile:** saves a text input to a file (path typed into the node; relative paths go to the output folder, folders are created), `overwrite` or append with an optional `new_line` before the appended text, safe overwrite via a temporary file, outputs the written text, runs without a connected output; optional folder restriction.
+**ListFiles:** lists a folder's files (natural order, optional suffix filter, no sub folders / hidden files), outputs one by `index` (wrap-around option, *control after generate* for stepping through the folder) or all as a list, plus a joined text, the match count and an `errors` text.
 
-**TxtReadFile:** a node without inputs that reads a text file (path typed into the node, quotes and `~` / environment variables handled, UTF-8 / UTF-16 / UTF-32 / Windows-1252) and outputs its content; re-runs when the file changes; optional folder and size limits.
+**TxtWriteFile:** saves a text input to a file (path typed into the node; relative paths go to the output folder, folders are created), `overwrite` or append with an optional `new_line` before the appended text, safe overwrite via a temporary file, outputs the written text and the full path of the file, runs without a connected output; optional folder restriction.
 
-**MultiTabText Remove Tags:** any number of text inputs joined with a chosen separator; remove or replace tags (`tag`, `old=(new)`, random `{a|b|}` replacements); case, whole-word, separator-cleanup and empty-line options; bypassed or muted sources are ignored and an empty string is output when nothing is left.
+**TxtReadFile:** a node without inputs that reads a text file (path typed into the node, quotes and `~` / environment variables handled, UTF-8 / UTF-16 / UTF-32 / Windows-1252) and outputs its content plus an `errors` text (problems never stop the run); reads the file again on every run; optional folder and size limits.
+
+**MultiTabText Remove Tags:** optional comment support (`#`, `//`, `/* */` ignored in the texts and in the tags box); any number of text inputs joined with a chosen separator; remove or replace tags (`tag`, `old=(new)`, random `{a|b|}` replacements); case, whole-word, separator-cleanup and empty-line options; bypassed or muted sources are ignored and an empty string is output when nothing is left.

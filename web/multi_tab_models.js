@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-06.20)");
+console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-06.23)");
 
 // MultiTabModels: tabs, each with a choice for ComfyUI's "Load Checkpoint", "Load Diffusion Model", "Load CLIP" and
 // "Load VAE", the sampler settings (steps, cfg, sampler_name, scheduler) of the KSampler and a LoRA text field.
@@ -914,6 +914,27 @@ function createEditor(node, selectionWidget) {
     renderGroups();
   };
 
+  // "Tab 1 copy", "Tab 1 copy 2", ... (a name that is not used yet)
+  const copyName = (name) => {
+    const used = new Set(state.tabs.map((t) => t.name));
+    const base = name.replace(/ copy( \d+)?$/, "") + " copy"; // a copy of a copy stays "X copy 2", not "X copy copy"
+    let candidate = base;
+    for (let n = 2; used.has(candidate); n++) candidate = `${base} ${n}`;
+    return candidate;
+  };
+
+  // Copy the active tab (every choice, the sampler settings and the LoRA text) right behind it and switch to the copy.
+  // It is a deep copy: changing the copy never changes the original.
+  const duplicateTab = () => {
+    const copy = JSON.parse(JSON.stringify(state.tabs[state.active]));
+    copy.name = copyName(copy.name);
+    state.tabs.splice(state.active + 1, 0, copy);
+    state.active += 1;
+    save();
+    renderTabs();
+    renderGroups();
+  };
+
   const moveTab = (from, to) => {
     const activeTab = state.tabs[state.active];
     const [t] = state.tabs.splice(from, 1);
@@ -1015,6 +1036,8 @@ function createEditor(node, selectionWidget) {
     toolbar.append(b);
     return b;
   };
+
+  btn("Duplicate tab", "Copy the active tab (all choices and the LoRA text) right after it", duplicateTab);
 
   btn("Export tab", "Save the active tab as a .json file", () => {
     const tab = state.tabs[state.active];
