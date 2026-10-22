@@ -10,15 +10,10 @@ Seven nodes for ComfyUI:
 | **TxtWriteFile** | Saves a text input to a file: overwrite it or append to it (optionally starting on a new line). Outputs the written text and the full path of the file. |
 | **ListFiles** | Lists the files of a folder (optionally only some suffixes) and outputs one of them (by index, with wrap-around) or all of them. |
 | **TxtReadFile** | Reads a text file and outputs all of it, one chosen line, or a random line, plus an `errors` text. Type the path into the node and choose the mode. The file is read again on every run. |
-| **MultiTabModels** | A tabbed model loader with sampler settings. Each tab picks a checkpoint and/or a diffusion model, a CLIP and a VAE like ComfyUI's own loader nodes, plus `steps`, `cfg`, `sampler_name`, `scheduler` and a LoRA text field (with comments). Outputs `MODEL`, `CLIP`, `VAE`, `steps`, `cfg`, `sampler_name`, `scheduler` and `LORA` of the active tab. Works with LoRA Manager. |
+| **MultiTabModels** | A tabbed model loader with sampler settings. Each tab picks a checkpoint and/or a diffusion model, a CLIP and a VAE like ComfyUI's own loader nodes, plus optional CLIP skip (CLIP Set Last Layer), `steps`, `cfg`, `sampler_name`, `scheduler` and a LoRA text field (with comments). Outputs `MODEL`, `CLIP`, `VAE`, `steps`, `cfg`, `sampler_name`, `scheduler` and `LORA` of the active tab. Works with LoRA Manager. |
 
 All nodes are in the add-node menu under **MultiTabText** (double-click the canvas and search for "MultiTabText").
 
----
-![mtremovetext.JPG](img/mtremovetext.JPG)
-![multitabmodels.JPG](img/multitabmodels.JPG)
-![multitabtext.JPG](img/multitabtext.JPG)
-![textfile.JPG](img/textfile.JPG)
 ---
 
 ## Installation
@@ -41,7 +36,7 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    The `web/` folder is required. It contains the editor. Without it you only get a plain one-line text field.
    `prompt_vars.py` is required too: it holds the model detection and `@if` / `%placeholder%` support.
 3. Start ComfyUI. The terminal should print:
-   `[MultiTabText] Python side loaded (build 2026-10-21.7) from ...`
+   `[MultiTabText] Python side loaded (build 2026-10-22.2) from ...`
 4. Hard-refresh the browser (**Ctrl+F5**).
 5. Add the node. Delete any older copy of the node first, because nodes keep the widgets they were created with.
 
@@ -459,11 +454,12 @@ Examples: connect `files` to the `path` of **TxtReadFile** with `suffix` `.txt` 
 
 ## MultiTabModels
 
-A tabbed model loader with sampler settings. Each tab holds five groups. Four of them are ComfyUI's own loader nodes, the fifth is the sampler part of the KSampler node:
+A tabbed model loader with sampler settings. Each tab holds the four loader groups of ComfyUI, an optional CLIP skip setting and the sampler part of the KSampler, plus a free LoRA text field:
 
 | Group | Same as ComfyUI node | Inputs | Gives |
 |-------|----------------------|--------|-------|
 | **Load Checkpoint** | Load Checkpoint (`CheckpointLoaderSimple`) | `ckpt_name` | `MODEL`, `CLIP` and `VAE` from **one file** |
+| **CLIP skip** (under Load Checkpoint) | CLIP Set Last Layer (`CLIPSetLastLayer`) | `use` (on/off), `stop_at_clip_layer` | changes the tab's final `CLIP` output (optional) |
 | **Load Diffusion Model** | Load Diffusion Model (`UNETLoader`) | `unet_name`, `weight_dtype` | `MODEL` |
 | **Load CLIP** | Load CLIP (`CLIPLoader`) | `clip_name`, `type`, `device` | `CLIP` |
 | **Load VAE** | Load VAE (`VAELoader`) | `vae_name` | `VAE` |
@@ -477,6 +473,7 @@ A tabbed model loader with sampler settings. Each tab holds five groups. Four of
 - `steps` and `cfg` are number fields with ComfyUI's own limits (steps 1 to 10000, cfg 0 to 100). Values are corrected to those limits when you leave the field.
 - `sampler_name` and `scheduler` are drop-downs with the samplers and schedulers your ComfyUI offers **right now** (the lists of the KSampler node, including ones added by other custom nodes). Their outputs are typed with the same lists, so they connect directly to a KSampler's `sampler_name` and `scheduler` inputs, just like `steps` and `cfg` connect to its `steps` and `cfg`.
 - The drop-down lists, the extra options and the loading itself all come from ComfyUI, so the choices (including the CLIP `type` list) always match the standard nodes of the ComfyUI version you run. If a future ComfyUI adds an option to one of these loaders, it appears here automatically.
+- **CLIP skip** is optional and **off by default**. Tick **use** under **Load Checkpoint** and choose a `stop_at_clip_layer` value. Like ComfyUI's CLIP Set Last Layer node, `-1` is the last layer (no skip), `-2` skips the last layer, and so on down to `-24`. It is applied to the tab's **final CLIP output**, whether that CLIP comes from the checkpoint or from a separate **Load CLIP**. Turning it on, off or changing the layer re-runs the node but does **not** reload any model.
 
 ### Checkpoint, or separate models, or both
 
@@ -489,17 +486,17 @@ A checkpoint file can contain the diffusion model, the CLIP and the VAE. The gro
 | A checkpoint **and** a separate loader | the separate Diffusion Model, CLIP or VAE **replaces** the matching checkpoint output; the other outputs still come from the checkpoint |
 | A group on `(none)` | that group is not loaded and replaces nothing; if nothing provides an output it stays empty |
 
-For example: a checkpoint plus a different VAE gives the checkpoint's `MODEL` and `CLIP` with your own `VAE`.
+For example: a checkpoint plus a different VAE gives the checkpoint's `MODEL` and `CLIP` with your own `VAE`. CLIP skip is applied after this combination, so it also affects a `CLIP` that comes from a separate **Load CLIP**.
 
 ### Using it
 
 - **The active tab is used.** Click a tab to switch; the outputs then come from that tab.
-- **New tabs start with every model file on `(none)`**, so nothing is loaded until you choose it (with a checkpoint and separate loaders available, loading all of them by default would waste time and memory). `steps`, `cfg`, `sampler_name`, `scheduler`, `weight_dtype`, `type` and `device` start with ComfyUI's own defaults.
+- **New tabs start with every model file on `(none)`**, so nothing is loaded until you choose it (with a checkpoint and separate loaders available, loading all of them by default would waste time and memory). `steps`, `cfg`, `sampler_name`, `scheduler`, `weight_dtype`, `type` and `device` start with ComfyUI's own defaults. CLIP skip starts off, with layer `-1` (CLIP Set Last Layer's default).
 - **Filtering long lists:** the drop-downs work like ComfyUI's own. Click one to open the list; when it has more than 10 entries (the sampler list, usually long model lists) a **Filter list** box appears at the top and is focused. Type to hide every entry that does not contain the text (case-insensitive), use **Up / Down** to move the highlight, **Enter** to pick it, **Esc** (or a click elsewhere) to close. The current choice is highlighted when the list opens. Short lists open without a filter box.
 - A model that was chosen but is no longer on disk stays selected and is marked `(not found)`, so nothing is silently replaced.
 - **Refresh lists** re-reads all lists from ComfyUI (after adding or removing model files, or after another custom node adds samplers).
-- **Models are not reloaded needlessly.** Only the active tab's choices are sent to ComfyUI, so renaming, reordering, adding or editing **other** tabs does nothing at all. Changing `steps`, `cfg`, the sampler, the scheduler or the LORA text does make ComfyUI run this node again, but the node remembers what it loaded: the same checkpoint / diffusion model / CLIP / VAE with the same options is **not read from disk again**. One entry is kept per group (so memory use is that of the current selection), a file that was replaced on disk is detected and loaded again, and the memory is released when ComfyUI unloads models (**Free model and node cache**). Set the environment variable `MULTITABMODELS_NO_CACHE=1` to turn this off.
-- Tabs saved by an earlier version still load: their model choices are kept, and the new checkpoint and sampler fields are filled with the defaults above.
+- **Models are not reloaded needlessly.** Only the active tab's choices are sent to ComfyUI, so renaming, reordering, adding or editing **other** tabs does nothing at all. Changing `steps`, `cfg`, the sampler, the scheduler, CLIP skip or the LORA text does make ComfyUI run this node again, but the node remembers what it loaded: the same checkpoint / diffusion model / CLIP / VAE with the same options is **not read from disk again**. One entry is kept per group (so memory use is that of the current selection), a file that was replaced on disk is detected and loaded again, and the memory is released when ComfyUI unloads models (**Free model and node cache**). Set the environment variable `MULTITABMODELS_NO_CACHE=1` to turn this off.
+- Tabs saved by an earlier version still load: their model choices are kept, and new fields (checkpoint, sampler and CLIP skip) start with the defaults above. An old tab therefore has CLIP skip off until you tick **use**.
 
 ### LoRA text and LoRA Manager
 
@@ -528,14 +525,24 @@ With LoRA Manager installed, MultiTabModels shows up as a target for these "send
 |------------------------|--------------|
 | A **checkpoint** | set as `ckpt_name` (Load Checkpoint group) |
 | A **diffusion model** | set as `unet_name` (Load Diffusion Model group) |
-| **Params** ("Send Gen Params to Workflow") | `steps`, `cfg`, `sampler_name` and `scheduler` are set in the Sampler settings group. Other parameters it sends (seed, size, prompts ...) are not for this node and are ignored |
+| **Params** ("Send Gen Params to Workflow") | `steps`, `cfg`, `sampler_name`, `scheduler` and (when sent) `clip_skip` are applied. A `clip_name` / `vae_name` value sent with the params fills **Load CLIP** / **Load VAE**. Other parameters it sends (seed, size, prompts ...) are not for this node and are ignored |
 | A **LoRA** | `<lora:name:strength>` is added to the LoRA text; a LoRA that is already there only gets its strength updated; trigger words go on a new line. "Replace" overwrites the text |
 
-How the model type is detected: the widget name LoRA Manager sends (`ckpt_name` or `unet_name`) is the first hint. If the file is only found in the *other* list (a diffusion model sent as a checkpoint, or the other way round), the list that really contains the file wins. Slash style (`/` or `\`), upper / lower case and extra leading folders do not matter when the file is matched against the lists. A file that is not on disk is still set and marked `(not found)`.
+How the file type is detected: the widget name LoRA Manager sends (`ckpt_name`, `unet_name`, `clip_name` or `vae_name`) is the first hint. A checkpoint / diffusion model that is only found in the *other* of those two lists is moved there (a diffusion model sent as a checkpoint, or the other way round); CLIP and VAE files stay in their own group. Slash style (`/` or `\`), upper / lower case and extra leading folders do not matter when the file is matched against the lists. A file that is not on disk is still set and marked `(not found)`.
 
-How params get to the node: LoRA Manager only offers a node as a target of "Send Gen Params to Workflow" when it has the marker role **Send Gen Params Target** (normally set by hand with a node's right-click menu, *Mark as*). MultiTabModels **claims that role for itself** and tells LoRA Manager that it has the widgets `steps`, `cfg`, `sampler_name` and `scheduler`, so you do not have to mark it. If you do mark the node with another role yourself, that choice is respected. LoRA Manager skips bypassed and muted nodes, so keep MultiTabModels active. When you also marked a KSampler, LoRA Manager asks which node(s) should receive the parameters.
+How params get to the node: LoRA Manager only offers a node as a target of "Send Gen Params to Workflow" when it has the marker role **Send Gen Params Target** (normally set by hand with a node's right-click menu, *Mark as*). MultiTabModels **claims that role for itself** and tells LoRA Manager that it has the widgets `steps`, `cfg`, `sampler_name`, `scheduler`, `clip_name`, `vae_name` and `clip_skip`, so you do not have to mark it. If you do mark the node with another role yourself, that choice is respected. LoRA Manager skips bypassed and muted nodes, so keep MultiTabModels active. When you also marked a KSampler, LoRA Manager asks which node(s) should receive the parameters.
 
-How params are applied: LoRA Manager turns the recipe's sampler text into ComfyUI names itself (for example `Euler a Karras` becomes `euler_ancestral` + `karras`) and sends one parameter at a time. `steps` is rounded and kept between ComfyUI's limits (1 to 10000), `cfg` is kept between 0 and 100 and rounded to ComfyUI's precision, and `sampler_name` / `scheduler` are matched to the lists ignoring case, spaces and underscores. A name that is not in the list is still set and marked `(not found)`. Text or other values that are not numbers are ignored for `steps` and `cfg`. A whole "send params" arrives as a short series of updates, all into the same tab.
+How params are applied: LoRA Manager turns the recipe's sampler text into ComfyUI names itself (for example `Euler a Karras` becomes `euler_ancestral` + `karras`) and sends one parameter at a time. `steps` is rounded and kept between ComfyUI's limits (1 to 10000), `cfg` is kept between 0 and 100 and rounded to ComfyUI's precision, and `sampler_name` / `scheduler` are matched to the lists ignoring case, spaces and underscores. A name that is not in the list is still set and marked `(not found)`. `clip_name` and `vae_name` are matched to their model lists the same way. A `clip_skip` that arrives as a positive count (LoRA Manager's `1`, `2`, ...) becomes the matching negative layer (`-1`, `-2`, ...); an already negative ComfyUI layer is kept. Text or other values that are not numbers are ignored for `steps`, `cfg` and `clip_skip`. A whole "send params" arrives as a short series of updates, all into the same tab.
+
+LoRA Manager **shows** Clip Skip in its recipe / showcase parameters, but the current public build (`a19c105`) does not forward it with "Send Params": `showcase/MediaUtils.js` maps only Seed, Steps, Sampler and CFG, and `utils/uiHelpers.js` explicitly removes `clip_skip` before matching widgets. The optional patch in `patches/lora-manager-send-clip-skip.patch` adds the missing label mapping and widget handling:
+
+```bat
+cd "C:\ComfyUI\custom_nodes\ComfyUI-Lora-Manager"
+git apply --check "<path-to-MultiTabText>\patches\lora-manager-send-clip-skip.patch"
+git apply "<path-to-MultiTabText>\patches\lora-manager-send-clip-skip.patch"
+```
+
+The patch is against the public `a19c105` tree. If `git apply --check` fails after a LoRA Manager update, the same three edits are visible in the patch. Restart ComfyUI and hard-refresh the LoRA Manager tab. Reapply the patch after updating LoRA Manager. Without the patch, use the node's own CLIP skip control; MultiTabModels is ready to apply `clip_skip` whenever a sender provides it. A value of `0` turns CLIP skip off; `1` means the last layer (`-1`, no visible change), and `2` skips one layer (`-2`); an already negative ComfyUI layer is kept.
 
 The editor flashes blue when something arrives. If LoRA Manager lists several compatible nodes, it asks which one to use: pick the **MultiTabModels** node (it has the title you gave it).
 
@@ -543,8 +550,8 @@ The editor flashes blue when something arrives. If LoRA Manager lists several co
 
 The same tab handling as MultiTabText:
 - **+** adds a tab, **×** removes it (the last tab is reset instead of removed), **double-click** renames, **drag** reorders.
-- **Duplicate tab** copies the active tab (every choice, the sampler settings and the LoRA text) right behind it and switches to the copy, named `Name copy` (`Name copy 2`, ...). It is an independent copy: changing it never changes the original.
-- **Export tab** saves the active tab (all groups, numbers included) as a `.json` file. **Import tab(s)** loads one or more such files, each into a new tab (an Export all file is accepted too and adds all its tabs).
+- **Duplicate tab** copies the active tab (every choice, CLIP skip, the sampler settings and the LoRA text) right behind it and switches to the copy, named `Name copy` (`Name copy 2`, ...). It is an independent copy: changing it never changes the original.
+- **Export tab** saves the active tab (all groups, CLIP skip, numbers included) as a `.json` file. **Import tab(s)** loads one or more such files, each into a new tab (an Export all file is accepted too and adds all its tabs). Tabs without CLIP skip data from older exports load with it off.
 - **Export all** saves every tab to one `.json` file. **Import all** replaces all tabs, or adds them after the current ones when **Append on import** is ticked.
 - **Clear all** closes all tabs and resets the node to one default tab (asks first when there is more than one tab).
 
@@ -571,11 +578,13 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | Only a one-line field, no tabs | The JavaScript did not load. Check the folder layout above, restart ComfyUI, and press Ctrl+F5. The terminal line `[MultiTabText] WARNING: ... MISSING` means `web/multi_tab_text.js` is not in the right place. |
 | Still no editor | Open the browser console (F12) and look for lines starting with `[MultiTabText]`. `frontend extension loaded` and `editor created` should appear. Send any red errors if not. |
 | A new checkbox or socket is missing on an existing node | Delete the node and add it again. |
-| "Send Gen Params to Workflow" does not offer MultiTabModels, or nothing changes in the tab | MultiTabModels must be active (not bypassed or muted). Reload the page once so LoRA Manager receives the node list. In the browser console (F12, level *Verbose*) you should see `[MultiTabText] told LoRA Manager about 1 MultiTabModels node(s)`, and `LoRA Manager sent steps = ...` for every parameter that arrives. If the node is still not offered, mark it yourself: right-click the node, *Mark as*, *Send Gen Params Target*. |
+| "Send Gen Params to Workflow" does not offer MultiTabModels, or nothing changes in the tab | MultiTabModels must be active (not bypassed or muted). Reload the page once so LoRA Manager receives the node list. In the browser console (F12, level *Verbose*) you should see `[MultiTabText] told LoRA Manager about 1 MultiTabModels node(s)`, and `LoRA Manager sent steps = ...` (or `clip_name`, `clip_skip`, ...) for every parameter that arrives. If the node is still not offered, mark it yourself: right-click the node, *Mark as*, *Send Gen Params Target*. |
 | TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. In **specific line** mode, a blank line is a valid empty text; otherwise check that the line number is not out of range (the message says how many lines the file has) or switch on **wrap**. **Random line** mode can also pick a blank line, and an empty file has no line to read. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
 | ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-21.7) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-21.7)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-22.2) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-22.2)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| MultiTabModels CLIP skip does nothing | Tick **use** under **Load Checkpoint** and choose a layer below `-1`. `-1` is the last layer and therefore changes nothing; `-2` skips one layer. It applies to the tab's final CLIP, including a separate **Load CLIP**. When LoRA Manager's **Send params to workflow** carries Clip Skip, it enables the setting for the active tab automatically. |
+| CLIP skip from "Send params to workflow" is not applied | Current public LoRA Manager displays Clip Skip but does not include it in the send request. Apply `patches/lora-manager-send-clip-skip.patch` in the LoRA Manager folder, restart ComfyUI, and hard-refresh the LoRA Manager tab. In the browser console (F12, *Verbose*) the send should then show `[MultiTabText] LoRA Manager sent clip_skip = ...`. Without the patch, use the node's own CLIP skip control. The value must be a number: `0` disables CLIP skip, `1` means the last layer, and `2` skips one layer. |
 | `%model%` stays as it is, or `%model_type%` is `unknown` | Check the console: the node prints a warning once when no checkpoint / diffusion model was found or when a placeholder name is unknown. The model must be reachable from the sampler that uses the text, otherwise the nearest loader is used. If a new model was renamed to a generic file, keep its family name in the folder (for example `Anima/model.safetensors`), or connect its separate CLIP and VAE loaders so the loader hints can identify it. With LoRA Manager installed, `%model_base%` / `%model_title%` need its checkpoint cache to be filled. |
 | Lora Text Loader removes the tag but does not change the model | The console names the reason: the LoRA is not in `models/loras`, its name is empty, or a strength is not a number. Matching ignores case and accepts the file name, its stem, a path or the beginning of a name. The last part is the clip strength only when four values are written: `<lora:name:model:clip>`. |
 | Nodes appear twice | An old copy of the package is still in `custom_nodes`. Remove it. |
@@ -591,7 +600,7 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 
 **MultiTabText:** a Duplicate tab button; any number of optional text inputs that are added before or after the output ("In front" option); a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; model placeholders (`%model%`, `%model_type%`, `%ckpt%`, `%loras%`, ...) with detection for recent families (Anima, MOSS Image, Krea 2, ...) from file names, CLIP type and CLIP/VAE loader pairs, and `@if` / `@elseif` / `@else` / `@endif` blocks without extra sockets, including exact LoRA Manager data when it is installed; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
 
-**MultiTabModels:** a Duplicate tab button; tabs with a LoRA text field (output `LORA`, comments supported), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
+**MultiTabModels:** a Duplicate tab button; tabs with a LoRA text field (output `LORA`, comments supported), optional per-tab CLIP skip (CLIP Set Last Layer), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
 
 **Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
 

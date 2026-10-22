@@ -8,9 +8,10 @@ Every tab holds one choice for each of these standard ComfyUI nodes:
   * Load CLIP             (CLIPLoader)             -> CLIP
   * Load VAE              (VAELoader)              -> VAE
 
-plus the sampler settings of ComfyUI's KSampler: steps (INT), cfg (FLOAT), sampler_name and scheduler, and a free
-text field per tab (typically LoRA syntax such as <lora:name:0.8>) that is output as LORA. Comments in that text
-(lines starting with # or //, and /* ... */ blocks) are removed from the output.
+plus the sampler settings of ComfyUI's KSampler: steps (INT), cfg (FLOAT), sampler_name and scheduler, a free
+text field per tab (typically LoRA syntax such as <lora:name:0.8>) that is output as LORA, and an optional CLIP
+skip setting (ComfyUI's CLIP Set Last Layer) applied to the tab's CLIP output. Comments in the LoRA text (lines
+starting with # or //, and /* ... */ blocks) are removed from the output.
 
 The ACTIVE tab is used. The editor (web/multi_tab_models.js) keeps all tabs in the node's properties and puts only
 the active tab's choices into the hidden `selection` input, so editing / renaming / reordering the other tabs never
@@ -149,14 +150,23 @@ def _comfy_lists():
 def _number(value, convert, default):
     try:
         return convert(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _parse_clip_skip(value) -> dict:
+    """{"enabled": bool, "layer": -1 ... -24} from the tab editor; disabled by default."""
+    value = value if isinstance(value, dict) else {}
+    enabled = value.get("enabled") is True
+    layer = _number(value.get("layer"), lambda v: int(round(v)), -1)
+    return {"enabled": enabled, "layer": max(-24, min(-1, layer))}
 
 
 def parse_selection(raw) -> dict:
     """
-    {"ckpt": {...}, "unet": {...}, "clip": {...}, "vae": {...}, "sampling": {...}, "lora": "text"}.
-    Loader groups hold strings only; sampling keeps numbers as numbers. Anything invalid -> empty groups.
+    {"ckpt": {...}, "unet": {...}, "clip": {...}, "vae": {...}, "sampling": {...}, "clip_skip": {...},
+     "lora": "text"}. Loader groups hold strings only; sampling and clip_skip keep numbers. Anything invalid ->
+     empty groups / clip skip disabled.
     """
     try:
         data = json.loads(raw) if isinstance(raw, str) else dict(raw)
@@ -170,9 +180,19 @@ def parse_selection(raw) -> dict:
         group = group if isinstance(group, dict) else {}
         plain = {str(k): v for k, v in group.items() if isinstance(v, (str, int, float)) and not isinstance(v, bool)}
         out[key] = plain if key == "sampling" else {k: str(v) for k, v in plain.items()}
+    out["clip_skip"] = _parse_clip_skip(data.get("clip_skip"))
     lora = data.get("lora")
     out["lora"] = lora if isinstance(lora, str) else ""
     return out
+
+
+def _apply_clip_skip(clip, settings):
+    """The same operation as ComfyUI's CLIP Set Last Layer; disabled or no CLIP leaves the output untouched."""
+    if clip is None or not settings.get("enabled"):
+        return clip
+    clip = clip.clone()
+    clip.clip_layer(int(settings.get("layer", -1)))
+    return clip
 
 
 class MultiTabModels:
@@ -212,6 +232,9 @@ class MultiTabModels:
                 loaded = _load_cached(key, class_name, file_input, sel[key])[0]
             chosen.append(loaded if loaded is not None else ckpt[index])
 
+        # CLIP Set Last Layer applies to the final CLIP output, whether it came from the checkpoint or Load CLIP.
+        chosen[1] = _apply_clip_skip(chosen[1], sel["clip_skip"])
+
         # 3. sampler settings
         sampling = sel["sampling"]
         steps = _number(sampling.get("steps"), lambda v: int(round(v)), DEFAULT_STEPS)
@@ -223,8 +246,9 @@ class MultiTabModels:
             print(
                 f"[MultiTabModels] ckpt={sel['ckpt'].get(ckpt_input) or '(none)'} "
                 f"unet={sel['unet'].get('unet_name') or '(none)'} clip={sel['clip'].get('clip_name') or '(none)'} "
-                f"vae={sel['vae'].get('vae_name') or '(none)'} steps={steps} cfg={cfg} "
-                f"sampler={sampler_name} scheduler={scheduler}",
+                f"vae={sel['vae'].get('vae_name') or '(none)'} "
+                f"clip_skip={'on' if sel['clip_skip']['enabled'] else 'off'}:{sel['clip_skip']['layer']} "
+                f"steps={steps} cfg={cfg} sampler={sampler_name} scheduler={scheduler}",
                 flush=True,
             )
         lora = strip_comments(sel["lora"])  # commented-out LoRAs / notes are not part of the output

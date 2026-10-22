@@ -1,12 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-21.7)");
+console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-22.2)");
 
 // MultiTabModels: tabs, each with a choice for ComfyUI's "Load Checkpoint", "Load Diffusion Model", "Load CLIP" and
-// "Load VAE", the sampler settings (steps, cfg, sampler_name, scheduler) of the KSampler and a LoRA text field.
-// All tabs live in node.properties (saved with the workflow). Only the ACTIVE tab's choices go into the hidden
-// `selection` widget, which is the node's only prompt input - so editing other tabs never reloads a model.
+// "Load VAE", an optional CLIP skip (CLIP Set Last Layer), the sampler settings (steps, cfg, sampler_name, scheduler)
+// of the KSampler and a LoRA text field. All tabs live in node.properties (saved with the workflow). Only the ACTIVE
+// tab's choices go into the hidden `selection` widget, which is the node's only prompt input - so editing other tabs
+// never reloads a model.
 
 const NODE_NAME = "MultiTabModels";
 const PROP = "tabs_state";
@@ -23,6 +24,10 @@ const GROUPS = [
 ];
 
 const combo = (name, values) => ({ name, kind: "combo", values });
+
+// CLIP Set Last Layer's stop_at_clip_layer: -1 is the last layer, -2 skips one layer, and so on.
+const CLIP_SKIP_INPUT = { name: "layer", kind: "int", def: -1, min: -24, max: -1, step: 1 };
+
 // Used only when ComfyUI's node definitions cannot be read.
 const FALLBACK_SCHEMA = {
   ckpt: [combo("ckpt_name", [])],
@@ -75,6 +80,7 @@ const CSS = `
 .mtm-num{flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box;font:inherit;color:inherit;padding:2px 6px;border-radius:4px;
   background:var(--comfy-menu-bg,#353535);border:1px solid var(--border-color,#555);outline:none;}
 .mtm-num:hover,.mtm-num:focus{border-color:#7aa2f7;}
+.mtm-num:disabled{opacity:.45;cursor:not-allowed;}
 .mtm-pop{position:fixed;z-index:100000;display:flex;flex-direction:column;box-sizing:border-box;font:12px system-ui,sans-serif;
   color:var(--input-text,#ddd);background:var(--comfy-menu-bg,#353535);border:1px solid var(--border-color,#555);border-radius:4px;
   box-shadow:0 4px 14px rgba(0,0,0,.45);outline:none;}
@@ -160,11 +166,25 @@ function defaultFor(input, isFile) {
 }
 
 // ---------------------------------------------------------------------------
-// State: { active, importAppend, tabs: [{ name, ckpt: {ckpt_name}, unet: {...}, clip: {...}, vae: {...}, sampling: {steps, cfg, ...} }] }
+// State: { active, importAppend, tabs: [{ name, ckpt: {ckpt_name}, unet: {...}, clip: {...}, vae: {...},
+//          clipSkip: {enabled, layer}, sampling: {steps, cfg, ...} }] }
 // A value that is undefined means "not chosen yet": it gets ComfyUI's default as soon as the lists are known.
 // ---------------------------------------------------------------------------
+function clipSkipOf(tab) {
+  const skip = tab?.clipSkip ?? {};
+  const raw = Number(skip.layer);
+  return {
+    enabled: skip.enabled === true,
+    layer: Number.isFinite(raw) ? Math.min(-1, Math.max(-24, Math.round(raw))) : CLIP_SKIP_INPUT.def,
+  };
+}
+
 function normalizeTab(t, i) {
-  const tab = { name: String(t?.name ?? `Tab ${i + 1}`), lora: typeof t?.lora === "string" ? t.lora : "" };
+  const tab = {
+    name: String(t?.name ?? `Tab ${i + 1}`),
+    lora: typeof t?.lora === "string" ? t.lora : "",
+    clipSkip: clipSkipOf(t),
+  };
   for (const g of GROUPS) {
     tab[g.key] = {};
     for (const [k, v] of Object.entries(t?.[g.key] ?? {})) {
@@ -197,7 +217,7 @@ function fillDefaults(state) {
 
 // What the Python side receives: the active tab's choices (nothing is sent for values that are still unset).
 function selectionOf(tab) {
-  const out = { lora: tab?.lora ?? "" };
+  const out = { lora: tab?.lora ?? "", clip_skip: clipSkipOf(tab) };
   for (const g of GROUPS) out[g.key] = { ...(tab?.[g.key] ?? {}) };
   return out;
 }
@@ -422,8 +442,8 @@ function openPopup(field, choices, current, onPick) {
 // ---------------------------------------------------------------------------
 // LoRA Manager: which file kind was sent, and LoRA text merging
 // ---------------------------------------------------------------------------
-const MODEL_KINDS = { ckpt: "ckpt_name", unet: "unet_name" }; // group key -> the input that holds the file
-const KIND_BY_WIDGET = { ckpt_name: "ckpt", unet_name: "unet" };
+const MODEL_KINDS = { ckpt: "ckpt_name", unet: "unet_name", clip: "clip_name", vae: "vae_name" }; // group key -> the input that holds the file
+const KIND_BY_WIDGET = { ckpt_name: "ckpt", unet_name: "unet", clip_name: "clip", vae_name: "vae" };
 
 const normPath = (s) => String(s).replace(/\\/g, "/").toLowerCase();
 
@@ -440,18 +460,29 @@ function matchInList(values, value) {
   return byName.length === 1 ? byName[0] : null;
 }
 
-// Decide whether `value` is a checkpoint or a diffusion model. The widget name LoRA Manager used is the first hint;
-// if the file is only found in the other list, that list wins. Unknown files follow the widget name (default: checkpoint).
-function resolveModel(widgetName, value) {
+// Decide which loader group a file sent by LoRA Manager belongs to. The widget name is the first hint;
+// a checkpoint / diffusion model that is only found in the other of those two lists is moved there. CLIP and VAE
+// files stay in their own group. Unknown widget names only match a file that is really in one of the lists.
+function resolveFile(widgetName, value) {
   const listOf = (kind) => schema?.[kind]?.find((i) => i.name === MODEL_KINDS[kind])?.values ?? [];
   const hinted = KIND_BY_WIDGET[widgetName] ?? null;
-  const order = hinted ? [hinted, hinted === "ckpt" ? "unet" : "ckpt"] : ["ckpt", "unet"];
-  for (const kind of order) {
+  if (hinted === "ckpt" || hinted === "unet") {
+    const order = [hinted, hinted === "ckpt" ? "unet" : "ckpt"];
+    for (const kind of order) {
+      const found = matchInList(listOf(kind), value);
+      if (found) return { kind, input: MODEL_KINDS[kind], value: found, known: true };
+    }
+    return { kind: hinted, input: MODEL_KINDS[hinted], value, known: false }; // not on disk (any more): kept and marked "(not found)"
+  }
+  if (hinted) {
+    const found = matchInList(listOf(hinted), value);
+    return { kind: hinted, input: MODEL_KINDS[hinted], value: found ?? value, known: !!found };
+  }
+  for (const kind of Object.keys(MODEL_KINDS)) {
     const found = matchInList(listOf(kind), value);
     if (found) return { kind, input: MODEL_KINDS[kind], value: found, known: true };
   }
-  if (!hinted) return null; // not a model widget and not a known file: not for us
-  return { kind: hinted, input: MODEL_KINDS[hinted], value, known: false }; // not on disk (any more): kept and marked "(not found)"
+  return null; // not a model widget and not a known file: not for us
 }
 
 // Comments in the LoRA text (same rules as MultiTabText): lines starting with # or //, and /* ... */ blocks.
@@ -613,8 +644,8 @@ function findNode(graphId, nodeId) {
 }
 
 // Entries in the format LoRA Manager's workflow registry uses (POST /api/lm/register-nodes). Listing the widget names
-// "ckpt_name" / "unet_name" makes this node a target of "send checkpoint / diffusion model", "steps" / "cfg" /
-// "sampler_name" / "scheduler" of "send params"; supports_lora makes it a target of "send LoRA".
+// "ckpt_name" / "unet_name" / "clip_name" / "vae_name" makes this node a target of model sends, "steps" / "cfg" /
+// "sampler_name" / "scheduler" / "clip_skip" of "send params"; supports_lora makes it a target of "send LoRA".
 function registryEntries() {
   return allGraphNodes()
     .filter(({ node }) => node?.comfyClass === NODE_NAME)
@@ -631,7 +662,7 @@ function registryEntries() {
       capabilities: {
         supports_lora: true,
         has_text_widget: false,
-        widget_names: ["ckpt_name", "unet_name", "steps", "cfg", "sampler_name", "scheduler"],
+        widget_names: ["ckpt_name", "unet_name", "clip_name", "vae_name", "steps", "cfg", "sampler_name", "scheduler", "clip_skip"],
       },
     }));
 }
@@ -659,16 +690,20 @@ function installLoraManagerBridge() {
     return node?.comfyClass === NODE_NAME ? node._mtm ?? null : null;
   };
 
-  // "Send checkpoint / diffusion model / params to workflow": a widget name + a value
+  // "Send checkpoint / diffusion model / CLIP / VAE / params to workflow": a widget name + a value
   api.addEventListener("lm_widget_update", (e) => {
     const m = e?.detail ?? {};
     if (m.action === "inject_text" || m.widget_name === undefined) return;
     const editor = target(m);
     if (!editor) return;
     const name = String(m.widget_name);
+    const key = name.toLowerCase().replace(/[\s-]+/g, "_");
     console.debug(`[MultiTabText] LoRA Manager sent ${name} =`, m.value);
-    if (Object.hasOwn(PARAM_FIELDS, name)) editor.applyParam(name, m.value); // steps / cfg / sampler / scheduler
-    else editor.applyModel(name, m.value); // ckpt_name / unet_name (or any other name whose value is a known model file)
+    if (key === "clip_skip" || key === "clipskip" || key === "stop_at_clip_layer") {
+      editor.applyClipSkip(m.value);
+    } else if (Object.hasOwn(PARAM_FIELDS, key)) {
+      editor.applyParam(key, m.value); // steps / cfg / sampler / scheduler
+    } else editor.applyFile(key, m.value); // ckpt_name / unet_name / clip_name / vae_name (or a known file under another name)
   });
   // "Send LoRA to workflow": LoRA syntax, appended (merged) or replacing
   api.addEventListener("lora_code_update", (e) => {
@@ -796,7 +831,29 @@ function createEditor(node, selectionWidget) {
     sizeObserver.observe(textarea);
   };
 
-  // ----- groups (the three loaders of the active tab) -----
+  // CLIP Set Last Layer lives visually in the Load Checkpoint group, but applies to the final CLIP output.
+  const appendClipSkip = (box, tab) => {
+    const row = el("div", "mtm-row");
+    row.append(el("div", "mtm-label", "CLIP skip"));
+    const toggleLabel = el("label", "mtm-opt");
+    toggleLabel.title = "Apply ComfyUI's CLIP Set Last Layer to this tab's CLIP output";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = tab.clipSkip.enabled;
+    const layer = numberField(tab.clipSkip, CLIP_SKIP_INPUT, save);
+    layer.title = "stop_at_clip_layer: -1 = last layer, -2 = skip one layer, ...";
+    layer.disabled = !tab.clipSkip.enabled;
+    toggle.addEventListener("change", () => {
+      tab.clipSkip.enabled = toggle.checked;
+      layer.disabled = !toggle.checked;
+      save();
+    });
+    toggleLabel.append(toggle, document.createTextNode("use"));
+    row.append(toggleLabel, layer);
+    box.append(row);
+  };
+
+  // ----- loader groups (the active tab) -----
   const renderGroups = () => {
     closePopup();
     groupsEl.innerHTML = "";
@@ -850,6 +907,7 @@ function createEditor(node, selectionWidget) {
         row.append(field);
         box.append(row);
       });
+      if (g.key === "ckpt") appendClipSkip(box, tab);
       groupsEl.append(box);
     }
 
@@ -1129,7 +1187,7 @@ function createEditor(node, selectionWidget) {
   appendLabel.append(appendCb, document.createTextNode("Append on import"));
   toolbar.append(appendLabel);
 
-  // ----- text / model names sent from LoRA Manager go into the ACTIVE tab -----
+  // ----- file names and params sent from LoRA Manager go into the ACTIVE tab -----
   let flashTimer = null;
   const flash = () => {
     groupsEl.classList.add("mtm-flash");
@@ -1137,11 +1195,11 @@ function createEditor(node, selectionWidget) {
     flashTimer = setTimeout(() => groupsEl.classList.remove("mtm-flash"), 1500);
   };
 
-  // widgetName is what LoRA Manager sent ("ckpt_name" / "unet_name"); the file itself decides when it only exists in the
-  // other list. Returns "ckpt" / "unet" (what was set) or null.
-  const applyModel = (widgetName, value) => {
+  // widgetName is what LoRA Manager sent ("ckpt_name" / "unet_name" / "clip_name" / "vae_name"); the file itself
+  // decides when a checkpoint / diffusion model only exists in the other list. Returns the group key or null.
+  const applyFile = (widgetName, value) => {
     if (!schema || typeof value !== "string" || !value) return null;
-    const hit = resolveModel(widgetName, value);
+    const hit = resolveFile(widgetName, value);
     if (!hit) return null;
     const tab = state.tabs[state.active];
     tab[hit.kind][hit.input] = hit.value;
@@ -1149,6 +1207,33 @@ function createEditor(node, selectionWidget) {
     renderGroups();
     flash();
     return hit.kind;
+  };
+
+  // LoRA Manager's recipes store clip skip as a positive count (1 = last layer, 2 = skip one); the editor and
+  // CLIP Set Last Layer use negative layers (-1, -2). Accept either convention and enable the setting.
+  const applyClipSkip = (value) => {
+    let skip = value;
+    if (value && typeof value === "object") {
+      const raw = value.layer ?? value.value ?? value.clip_skip ?? value.clipSkip ?? value.stop_at_clip_layer;
+      if (raw === undefined) {
+        if (value.enabled !== false) return false;
+        state.tabs[state.active].clipSkip = { ...state.tabs[state.active].clipSkip, enabled: false };
+      } else {
+        skip = Number(raw);
+        if (raw === null || raw === "" || !Number.isFinite(skip)) return false;
+        const layer = skip === 0 ? -1 : Math.max(-24, Math.min(-1, Math.round(skip < 0 ? skip : -skip)));
+        state.tabs[state.active].clipSkip = { enabled: value.enabled !== false && skip !== 0, layer };
+      }
+    } else {
+      const n = Number(value);
+      if (value === null || value === "" || !Number.isFinite(n)) return false;
+      const layer = n === 0 ? -1 : Math.max(-24, Math.min(-1, Math.round(n < 0 ? n : -n)));
+      state.tabs[state.active].clipSkip = { enabled: n !== 0, layer };
+    }
+    save();
+    renderGroups();
+    flash();
+    return true;
   };
 
   // One generation parameter (steps, cfg, sampler_name, scheduler) goes into the active tab's sampler settings.
@@ -1184,7 +1269,8 @@ function createEditor(node, selectionWidget) {
   // ----- public API -----
   const api_ = {
     root: outer,
-    applyModel,
+    applyFile,
+    applyClipSkip,
     applyParam,
     applyLora,
     onSchema() {

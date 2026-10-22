@@ -40,7 +40,7 @@ try:  # imported as part of the package (ComfyUI)
 except ImportError:  # loaded as a plain module (tests, tools)
     from prompt_vars import apply_conditionals, build_context, substitute_variables, uses_prompt_data
 
-BUILD = "2026-10-21.7"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
+BUILD = "2026-10-22.2"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
 
 # Set the environment variable MULTITABTEXT_DEBUG=1 before starting ComfyUI to log what each run receives.
 _DEBUG = os.environ.get("MULTITABTEXT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
