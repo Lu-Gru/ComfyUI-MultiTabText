@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] frontend extension loaded (build 2026-10-06.23)");
+console.log("[MultiTabText] frontend extension loaded (build 2026-10-21.7)");
 
 const NODE_NAME = "RandomTextTabs";
 const DATA_WIDGET = "tabs_data";
@@ -304,7 +304,12 @@ function createEditor(node, dataWidget) {
   const ta = el("textarea", "rtt-text");
   ta.wrap = "off";
   ta.spellcheck = false;
-  ta.placeholder = "Type text here.\n# or // = comment line\n/* block comment */\n{red|green|} flower";
+  ta.placeholder = "Type text here.\n# or // = comment line\n/* block comment */\n{red|green|} flower"
+    + "\n%model% = model name; %model_type% outputs the model type (sdxl, pony, flux, anima, moss, ...)"
+    + "\n<lora:detail:0.8> = LoRA; <lora:style:0.6:0.4> = model:clip strength (Lora Text Loader)"
+    + "\n\n@if %model_type% == flux\nhighly detailed photo\n"
+    + "@elseif %model_type% == pony || %model_type% == sdxl || %model_type% == illustrious\n"
+    + "masterpiece, best quality\n@else\na photo\n@endif";
   stack.append(rowsEl, ta);
   scroll.append(stack);
   body.append(scroll);

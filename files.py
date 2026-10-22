@@ -1,19 +1,27 @@
 """
 Three file nodes:
 
-  TxtReadFile  - reads a text file and outputs its content (and an `errors` text; it never stops the run).
+  TxtReadFile  - reads a text file and outputs all of it or one chosen line (and an `errors` text; it never stops the run).
   TxtWriteFile - writes (or appends) its text input to a file and outputs what it wrote and the full path.
   ListFiles    - lists the files of a folder (optionally only some suffixes) and outputs one of them or all of them.
 
 TxtReadFile
 
-The node has no inputs: type (or paste) the path of the file into its `path` field.
+The node has no sockets: type (or paste) the path of the file into its `path` field. `mode` chooses the entire
+file (default), one specific `line` (1-based) or a random line. If `wrap` is on, a specific line number past the
+end starts again at the first line.
 
   * Quotes around the path are ignored, so a path copied with "Copy as path" works as it is.
   * `~` and environment variables (%USERPROFILE%, $HOME ...) are expanded.
   * A relative path is looked up from ComfyUI's working directory, then in ComfyUI's input folder.
   * Encodings: UTF-8 (with or without BOM), UTF-16 / UTF-32 with a BOM, otherwise Windows-1252. Line endings are
     normalised to "\\n".
+  * In "specific line" mode a trailing line break does not create an extra empty line, and a blank line that
+    exists in the file is returned as an empty text without an error.
+  * With "wrap" on, line 5 of a 4-line file is line 1 again (line numbers repeat from the start); an empty file
+    still has no line to wrap to.
+  * "random line" chooses one existing line on every run (blank lines included). `line` and `wrap` are ignored
+    in that mode.
   * Nothing is cached: the file is read again on every run, so the newest content is always used.
   * Errors never stop the run: `text` is empty and the `errors` output holds the message (empty when all is well).
 
@@ -25,6 +33,7 @@ files inside those folders can be read then. TXTREADFILE_MAX_MB (default 64) lim
 import codecs
 import importlib
 import os
+import random
 import re
 
 _BOMS = (
@@ -104,7 +113,55 @@ def decode_text(data: bytes) -> str:
         return data.decode("cp1252", errors="replace")  # the usual encoding of older Windows text files
 
 
-def read_text_file(raw_path) -> str:
+READ_ENTIRE = "entire file"
+READ_LINE = "specific line"
+READ_RANDOM = "random line"
+READ_MODES = (READ_ENTIRE, READ_LINE, READ_RANDOM)
+
+
+def _text_lines(text) -> list:
+    """The file's lines; a final newline ends the last line and does not add an empty one."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def select_text_line(text, line, path=None, wrap=False) -> str:
+    """One 1-based line from decoded text. A final newline ends the last line; it does not add a blank one."""
+    where = f": {path}" if path else ""
+    try:
+        number = int(line)
+    except (TypeError, ValueError):
+        raise ValueError(f"[TxtReadFile] line number must be a whole number, got {line!r}{where}") from None
+    if number < 1:
+        raise ValueError(f"[TxtReadFile] line number must be 1 or greater, got {number}{where}")
+    lines = _text_lines(text)
+    total = len(lines)
+    if number > total:
+        if wrap and total:
+            number = (number - 1) % total + 1
+        else:
+            plural = "" if total == 1 else "s"
+            hint = " (enable wrap to wrap the line number around)" if total else ""
+            raise ValueError(f"[TxtReadFile] line {number} is out of range: the file has {total} line{plural}{hint}{where}")
+    return lines[number - 1]
+
+
+def select_random_line(text, path=None, rng=None) -> str:
+    """One existing line, chosen randomly. `rng` is only for tests; normal use draws a new line every run."""
+    lines = _text_lines(text)
+    if not lines:
+        where = f": {path}" if path else ""
+        raise ValueError(f"[TxtReadFile] cannot choose a random line: the file is empty{where}")
+    return (rng if rng is not None else random).choice(lines)
+
+
+def read_text_file(raw_path, mode=READ_ENTIRE, line=1, wrap=False, rng=None) -> str:
+    mode = str(mode or READ_ENTIRE).strip().casefold()
+    if mode not in READ_MODES:
+        choices = ", ".join(repr(item) for item in READ_MODES)
+        raise ValueError(f"[TxtReadFile] unknown mode {mode!r}; use one of {choices}")
     path = resolve_path(raw_path)
     _check_allowed(path)
     if not os.path.exists(path):
@@ -116,7 +173,12 @@ def read_text_file(raw_path) -> str:
         raise ValueError(f"[TxtReadFile] file is too large ({size / 1048576:.1f} MB, limit set by TXTREADFILE_MAX_MB): {path}")
     with open(path, "rb") as handle:
         data = handle.read()
-    return decode_text(data).replace("\r\n", "\n").replace("\r", "\n")
+    text = decode_text(data).replace("\r\n", "\n").replace("\r", "\n")
+    if mode == READ_LINE:
+        return select_text_line(text, line, path, wrap)
+    if mode == READ_RANDOM:
+        return select_random_line(text, path, rng)
+    return text
 
 
 def error_message(tag: str, error: Exception) -> str:
@@ -130,8 +192,16 @@ def error_message(tag: str, error: Exception) -> str:
 class TxtReadFile:
     @classmethod
     def INPUT_TYPES(cls):
-        # No sockets: just a text field for the path.
-        return {"required": {"path": ("STRING", {"default": "", "multiline": False, "placeholder": "C:\\path\\to\\file.txt"})}}
+        # No sockets: a text field for the path and two settings (whole file or one line).
+        return {
+            "required": {
+                "path": ("STRING", {"default": "", "multiline": False, "placeholder": "C:\\path\\to\\file.txt"}),
+                "mode": ([READ_ENTIRE, READ_LINE, READ_RANDOM], {"default": READ_ENTIRE}),
+                "line": ("INT", {"default": 1, "min": 1, "max": 1000000000, "step": 1}),
+                "wrap": ("BOOLEAN", {"default": False, "label_on": "wrap line around",
+                                     "label_off": "error if out of range"}),
+            }
+        }
 
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("text", "errors")
@@ -143,9 +213,9 @@ class TxtReadFile:
         # NaN never equals itself: ComfyUI runs the node on every queue, so the file is always read again.
         return float("nan")
 
-    def read(self, path=""):
+    def read(self, path="", mode=READ_ENTIRE, line=1, wrap=False):
         try:
-            return (read_text_file(path), "")
+            return (read_text_file(path, mode, line, wrap), "")
         except Exception as error:  # every problem ends up in the `errors` output instead of stopping the run
             message = error_message("TxtReadFile", error)
             print(message, flush=True)  # also visible in the console, in case `errors` is not connected

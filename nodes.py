@@ -14,6 +14,19 @@ lines and returned. Each tab is processed separately:
      Escape literal characters with a backslash: \\{ \\} \\| \\\\
   3. Optional checkbox "Remove empty lines" (saved in the editor state as
      `removeEmptyLines`): empty / whitespace-only lines are removed from the final output.
+
+Model-aware templates (see prompt_vars.py) need no sockets: ComfyUI passes the API prompt through the
+hidden `PROMPT` input, and the graph is searched for the nearest checkpoint / diffusion model. Every tab
+may then use `%model%`, `%model_type%` and the other placeholders, plus `@if` / `@elseif` / `@else` /
+`@endif` blocks:
+
+  @if %model_type% == sdxl
+  masterpiece, best quality
+  @elseif %model_type% == flux
+  a highly detailed photo
+  @else
+  {{a photo|a painting}}
+  @endif
 """
 
 import functools
@@ -22,7 +35,12 @@ import os
 import random
 import re
 
-BUILD = "2026-10-06.23"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
+try:  # imported as part of the package (ComfyUI)
+    from .prompt_vars import apply_conditionals, build_context, substitute_variables, uses_prompt_data
+except ImportError:  # loaded as a plain module (tests, tools)
+    from prompt_vars import apply_conditionals, build_context, substitute_variables, uses_prompt_data
+
+BUILD = "2026-10-21.7"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
 
 # Set the environment variable MULTITABTEXT_DEBUG=1 before starting ComfyUI to log what each run receives.
 _DEBUG = os.environ.get("MULTITABTEXT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
@@ -157,8 +175,15 @@ def remove_empty_lines(text: str) -> str:
     return "\n".join([line for line in text.split("\n") if line.strip()])
 
 
-def process_text(text: str, rng=None, drop_empty: bool = False) -> str:
-    result = resolve_selectors(strip_comments(text), rng or _RNG)
+def process_text(text: str, rng=None, drop_empty: bool = False, context=None) -> str:
+    text = strip_comments(text)
+    if context is not None:
+        # @if blocks are resolved before the random selectors, so selectors in skipped branches are not
+        # used; %placeholders% are replaced afterwards so a model name can never break a selector.
+        text = apply_conditionals(text, context)
+    result = resolve_selectors(text, rng or _RNG)
+    if context is not None:
+        result = substitute_variables(result, context)
     if drop_empty:
         # Done last, so lines that became empty after a selector picked "" are removed too.
         result = remove_empty_lines(result)
@@ -191,10 +216,10 @@ def _selected_texts(raw: str):
     return _read_state(raw)[0]
 
 
-def process_tabs(texts, drop_empty: bool = False, rng=None) -> str:
-    """Process each tab on its own (comments, selectors), then join the non-empty results with new lines."""
+def process_tabs(texts, drop_empty: bool = False, rng=None, context=None) -> str:
+    """Process each tab on its own (comments, @if blocks, selectors, placeholders), then join the non-empty results with new lines."""
     rng = rng or _RNG
-    parts = [process_text(t, rng) for t in texts]
+    parts = [process_text(t, rng, context=context) for t in texts]
     result = "\n".join([p for p in parts if p.strip()])
     return remove_empty_lines(result) if drop_empty else result
 
@@ -203,6 +228,7 @@ class RandomTextTabs:
     @classmethod
     def INPUT_TYPES(cls):
         # `tabs_data` is hidden by the JS extension; it only carries the editor state.
+        # The hidden PROMPT / UNIQUE_ID give the node the workflow graph (model detection) without adding sockets.
         return {
             "required": {
                 "tabs_data": ("STRING", {"default": DEFAULT_STATE, "multiline": False}),
@@ -210,6 +236,10 @@ class RandomTextTabs:
             # Optional socket: when connected, that text is placed in front of the editor's output.
             "optional": {
                 "text": ("STRING", {"forceInput": True}),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
             },
         }
 
@@ -227,15 +257,29 @@ class RandomTextTabs:
             texts = _read_state(tabs_data)[0]
         except Exception:
             return float("nan")
-        return float("nan") if any("{" in t for t in texts) else ""
+        if any("{" in t for t in texts):
+            return float("nan")
+        if not any(uses_prompt_data(t) for t in texts):
+            return ""
+        # Model placeholders / @if depend on the graph, which is not part of the cache signature: include what
+        # was detected so a different checkpoint (or newly added LoRA Manager metadata) is noticed.
+        prompt = kwargs.get("prompt")
+        if not isinstance(prompt, dict) or not prompt:
+            return float("nan")  # no graph to compare against: keep re-running rather than cache a stale prompt
+        try:
+            return build_context(prompt, kwargs.get("unique_id")).fingerprint()
+        except Exception:
+            return float("nan")
 
-    def run(self, tabs_data, text=None, **kwargs):
+    def run(self, tabs_data, text=None, prompt=None, unique_id=None, **kwargs):
         texts, drop_empty, in_front = _read_state(tabs_data)
-        result = process_tabs(texts)
+        # The graph is only inspected when a tab actually uses a placeholder or a conditional.
+        context = build_context(prompt, unique_id) if any(uses_prompt_data(t) for t in texts) else None
+        result = process_tabs(texts, context=context)
 
         # Connected texts (`text`, then `text_2`, `text_3`, ... added by the frontend) go in FRONT of the
         # editor's output ("In front" checked, the default) or AFTER it (unchecked), in socket order, one per line. They are used as received (comments / {a|b}
-        # selectors are only processed inside the editor's own tabs). Empty texts are skipped.
+        # selectors / %placeholders% are only processed inside the editor's own tabs). Empty texts are skipped.
         extras = []
         for key, value in kwargs.items():
             m = _TEXT_KEY.match(key)
@@ -257,6 +301,8 @@ class RandomTextTabs:
                 f"MultiTabText.run build={BUILD} removeEmptyLines={drop_empty} tabs_used={len(texts)} "
                 f"texts_connected={len(prefixes)} in_front={in_front} lines_out={result.count(chr(10)) + 1 if result else 0}"
             )
+        if context is not None:
+            context.warn()
         # "Remove empty lines" applies to the complete output, connected texts included.
         return (remove_empty_lines(result) if drop_empty else result,)
 
@@ -516,5 +562,189 @@ class RemoveTags:
                             bool(clean_separators), bool(remove_empty_lines)),)
 
 
-NODE_CLASS_MAPPINGS = {"RandomTextTabs": RandomTextTabs, "RemoveTags": RemoveTags}
-NODE_DISPLAY_NAME_MAPPINGS = {"RandomTextTabs": "MultiTabText", "RemoveTags": "MultiTabText Remove Tags"}
+# ---------------------------------------------------------------------------
+# Lora Text Loader
+# ---------------------------------------------------------------------------
+
+_LORA_TAG = re.compile(r"<\s*lora\s*:([^<>]*)>", re.IGNORECASE)
+_LORA_SPACE = re.compile(r"[ \t]{2,}")
+
+
+def _lora_strength(raw, default):
+    """(value, ok). An empty weight uses `default`; a non-number is reported as not ok."""
+    text = str(raw or "").strip()
+    if not text:
+        return default, True
+    try:
+        return float(text), True
+    except ValueError:
+        return default, False
+
+
+def parse_lora_tags(text):
+    """
+    Split a prompt into (prompt without LoRA tags, tags).
+
+    Tag syntax, case-insensitive:
+
+        <lora:name>              model 1.0 / clip 1.0
+        <lora:name:0.8>          model 0.8 / clip 0.8
+        <lora:name:0.8:0.5>      model 0.8 / clip 0.5
+
+    Every `<lora:...>` tag is removed from the prompt, also when the LoRA cannot
+    be loaded. Tags are returned as {"name", "model_strength", "clip_strength",
+    "error", "raw"}. Only LoRA tags are touched; other angle brackets stay.
+    """
+    source = "" if text is None else str(text)
+    if not _LORA_TAG.search(source):
+        return source, []
+
+    tags = []
+    for match in _LORA_TAG.finditer(source):
+        parts = match.group(1).split(":")
+        name = parts[0].strip()
+        model_raw = parts[1] if len(parts) > 1 else ""
+        clip_raw = parts[2] if len(parts) > 2 else ""
+        tag = {
+            "name": name,
+            "model_strength": 1.0,
+            "clip_strength": 1.0,
+            "error": "",
+            "raw": match.group(0),
+        }
+        if not name:
+            tag["error"] = "the LoRA name is empty"
+        else:
+            model_strength, ok = _lora_strength(model_raw, 1.0)
+            if not ok:
+                tag["error"] = "invalid model strength {!r}".format(model_raw.strip())
+            else:
+                clip_strength, ok = _lora_strength(clip_raw, model_strength)
+                if not ok:
+                    tag["error"] = "invalid clip strength {!r}".format(clip_raw.strip())
+                else:
+                    tag["model_strength"] = model_strength
+                    tag["clip_strength"] = clip_strength
+        tags.append(tag)
+
+    # Remove the tags and tidy only what they leave behind: runs of spaces become one, a line
+    # that consisted only of tags disappears, original blank lines are kept.
+    lines = []
+    for line in source.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        cleaned = _LORA_SPACE.sub(" ", _LORA_TAG.sub("", line)).strip()
+        if cleaned or not line.strip():
+            lines.append(cleaned)
+    return "\n".join(lines).strip(), tags
+
+
+def _lora_keys(value):
+    path = str(value or "").replace("\\", "/").strip().lstrip("/").casefold()
+    base = path.rsplit("/", 1)[-1]
+    return path, base, os.path.splitext(base)[0]
+
+
+def _find_lora_file(name, files):
+    """Resolve a tag name to an entry of folder_paths.get_filename_list("loras")."""
+    wanted_path, wanted_base, wanted_stem = _lora_keys(name)
+    if not wanted_base:
+        return None
+    for file in files:
+        file_path, file_base, file_stem = _lora_keys(file)
+        if wanted_path == file_path or wanted_base in (file_base, file_stem):
+            return file
+    # The LoRA Tag Loader also accepts a prefix; prefer the closest (shortest) match.
+    partial = []
+    for file in files:
+        file_path, file_base, file_stem = _lora_keys(file)
+        if file_path.startswith(wanted_path) or file_base.startswith(wanted_base) or file_stem.startswith(wanted_stem):
+            partial.append((len(file_stem), file_stem, file))
+    partial.sort()
+    return partial[0][2] if partial else None
+
+
+class LoraTextLoader:
+    """
+    Loads the LoRAs written in `text` and outputs the prompt without the tags.
+
+    Inputs MODEL and CLIP are passed through the matching LoRA loaders in the order the tags
+    appear. A tag with no weight uses 1.0; a tag with one weight uses it for model and clip;
+    a tag with two weights sets model and clip strength separately. Missing or invalid LoRAs
+    are reported in the console and their tag is still removed from the prompt.
+
+    Based on comfyui_lora_tag_loader (badjeff), with separate clip strength and without
+    touching angle brackets that are not LoRA tags.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "clip": ("CLIP",),
+                "text": ("STRING", {"multiline": True, "default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING")
+    RETURN_NAMES = ("MODEL", "CLIP", "text")
+    FUNCTION = "load"
+    CATEGORY = "MultiTabText"
+
+    def load(self, model, clip, text):
+        prompt, tags = parse_lora_tags(text)
+        if not tags:
+            return (model, clip, prompt)
+
+        try:
+            import folder_paths
+            import comfy.sd
+            import comfy.utils
+        except Exception as exc:  # only possible outside ComfyUI
+            print("[MultiTabText] WARNING: Lora Text Loader cannot load LoRAs here ({}). "
+                  "The prompt is passed on unchanged apart from the removed tags.".format(exc), flush=True)
+            return (model, clip, prompt)
+
+        try:
+            files = folder_paths.get_filename_list("loras")
+        except Exception as exc:
+            print("[MultiTabText] WARNING: Lora Text Loader could not read the LoRA list ({}).".format(exc), flush=True)
+            files = []
+
+        for tag in tags:
+            if tag["error"]:
+                print("[MultiTabText] WARNING: Lora Text Loader ignored {}: {}.".format(tag["raw"], tag["error"]),
+                      flush=True)
+                continue
+            lora_name = _find_lora_file(tag["name"], files)
+            if lora_name is None:
+                print("[MultiTabText] WARNING: Lora Text Loader could not find LoRA {!r} in models/loras; "
+                      "its tag was removed from the prompt.".format(tag["name"]), flush=True)
+                continue
+            try:
+                lora_path = folder_paths.get_full_path("loras", lora_name)
+            except Exception:
+                lora_path = None
+            if not lora_path or not os.path.isfile(lora_path):
+                print("[MultiTabText] WARNING: Lora Text Loader found {!r} in the LoRA list but not on disk; "
+                      "its tag was removed from the prompt.".format(lora_name), flush=True)
+                continue
+            try:
+                lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
+                model, clip = comfy.sd.load_lora_for_models(
+                    model, clip, lora, tag["model_strength"], tag["clip_strength"])
+            except Exception as exc:
+                print("[MultiTabText] WARNING: Lora Text Loader could not load {!r}: {}.".format(lora_name, exc),
+                      flush=True)
+                continue
+            print("[MultiTabText] Lora Text Loader: loaded {} as {!r} (model={}, clip={}) from {}".format(
+                tag["raw"], lora_name, tag["model_strength"], tag["clip_strength"],
+                os.path.abspath(lora_path)), flush=True)
+        return (model, clip, prompt)
+
+
+NODE_CLASS_MAPPINGS = {"RandomTextTabs": RandomTextTabs, "RemoveTags": RemoveTags, "LoraTextLoader": LoraTextLoader}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "RandomTextTabs": "MultiTabText",
+    "RemoveTags": "MultiTabText Remove Tags",
+    "LoraTextLoader": "Lora Text Loader",
+}

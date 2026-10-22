@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-06.23)");
+console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-21.7)");
 
 // MultiTabModels: tabs, each with a choice for ComfyUI's "Load Checkpoint", "Load Diffusion Model", "Load CLIP" and
 // "Load VAE", the sampler settings (steps, cfg, sampler_name, scheduler) of the KSampler and a LoRA text field.
