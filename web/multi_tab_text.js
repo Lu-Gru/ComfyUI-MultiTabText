@@ -299,6 +299,7 @@ function createEditor(node, dataWidget) {
   const body = el("div", "rtt-body");
   // One scroll container holds: numbered rows (colored text, wraps like the textarea) + a transparent textarea on top.
   const scroll = el("div", "rtt-scroll");
+  scroll.setAttribute("data-capture-wheel", "true"); // scroll the text instead of zooming the canvas
   const stack = el("div", "rtt-stack");
   const rowsEl = el("div", "rtt-rows");
   const ta = el("textarea", "rtt-text");
@@ -439,6 +440,32 @@ function createEditor(node, dataWidget) {
     );
     loadActive();
   };
+
+  // Scroll the tab bar just enough to show a tab (only horizontally).
+  const revealTab = (i) => {
+    const tab = tabbar.querySelectorAll(".rtt-tab")[i];
+    if (!tab) return;
+    const bar = tabbar.getBoundingClientRect();
+    const rect = tab.getBoundingClientRect();
+    if (rect.left < bar.left) tabbar.scrollLeft -= bar.left - rect.left + 2;
+    else if (rect.right > bar.right) tabbar.scrollLeft += rect.right - bar.right + 2;
+  };
+
+  // Mouse wheel over the tab bar switches tabs (up = previous, down = next, wrapping around).
+  tabbar.setAttribute("data-capture-wheel", "true");
+  tabbar.addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.deltaY || state.tabs.length < 2 || e.target?.closest?.(".rtt-rename")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const step = e.deltaY < 0 ? -1 : 1;
+      const next = (state.active + step + state.tabs.length) % state.tabs.length;
+      selectTab(next);
+      revealTab(next);
+    },
+    { passive: false }
+  );
 
   const addTab = (name = null, text = "") => {
     state.tabs.push({ name: name || uniqueName(), text, checked: false });
@@ -1024,6 +1051,135 @@ function applyRemoveTagsRules(result, graph) {
 }
 
 // ---------------------------------------------------------------------------
+// Mouse wheel over one of this package's own number / drop-down widgets changes its value
+// (ComfyUI uses the wheel to zoom or pan the canvas). Ctrl / Cmd / Shift keep their canvas
+// meaning, and DOM widgets handle the wheel themselves (data-capture-wheel), so scrolling
+// the editors and zooming still work as before.
+// ---------------------------------------------------------------------------
+const WHEEL_WIDGET_NODES = new Set(["TxtReadFile", "TxtWriteFile", "ListFiles", "RemoveTags", "LoraTextLoader", "RandomTextTabs"]);
+
+function widgetUnderMouse(canvas) {
+  const [x, y] = canvas.graph_mouse ?? [];
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const node = canvas.graph?.getNodeOnPos?.(x, y, canvas.visible_nodes);
+  if (!node || !WHEEL_WIDGET_NODES.has(node.comfyClass ?? node.type)) return null;
+  let widget = node.getWidgetOnPos?.(x, y);
+  if (!widget && typeof node.getWidgetOnPos !== "function") {
+    // Older LiteGraph: widgets remember where they were drawn (in graph coordinates).
+    for (const w of node.widgets ?? []) {
+      if (w.type === "hidden" || w.hidden || w.computedDisabled || w.last_y == null) continue;
+      const h = w.computeSize?.(node.size?.[0])?.[1] ?? 20;
+      if (y >= w.last_y && y < w.last_y + h) {
+        widget = w;
+        break;
+      }
+    }
+  }
+  return widget ? { node, widget } : null;
+}
+
+function setWidgetValue(node, widget, value, event, canvas) {
+  if (typeof widget.setValue === "function") {
+    widget.setValue(value, { e: event, node, canvas }); // new LiteGraph: also notifies the node / workflow
+    return;
+  }
+  const old = widget.value;
+  widget.value = value;
+  try {
+    widget.callback?.(value, canvas, node, canvas.graph_mouse, event);
+    node.onWidgetChanged?.(widget.name ?? "", value, old, widget);
+  } catch (e) {
+    /* a callback that cannot take the wheel event must not stop the change */
+  }
+  if (typeof node.graph?.incrementVersion === "function") node.graph.incrementVersion();
+  else node.graph?.change?.();
+  node.setDirtyCanvas?.(true, true);
+}
+
+// direction: +1 = wheel up, -1 = wheel down
+function wheelWidgetValue(node, widget, direction, event, canvas) {
+  if (widget.computedDisabled || widget.disabled || widget.type === "hidden") return false;
+  if (widget.type === "number" || widget.type === "slider") {
+    if (typeof widget.incrementValue === "function" && typeof widget.decrementValue === "function") {
+      (direction > 0 ? widget.incrementValue : widget.decrementValue).call(widget, { e: event, node, canvas });
+    } else {
+      const opts = widget.options ?? {};
+      const step = Math.abs(Number(opts.step)) || 1;
+      let value = Number(widget.value);
+      if (!Number.isFinite(value)) value = Number.isFinite(opts.min) ? opts.min : 0;
+      value += direction * step;
+      if (Number.isFinite(opts.min)) value = Math.max(opts.min, value);
+      if (Number.isFinite(opts.max)) value = Math.min(opts.max, value);
+      const decimals = String(step).split(".")[1]?.length ?? 0;
+      setWidgetValue(node, widget, Number(value.toFixed(decimals)), event, canvas);
+    }
+    return true;
+  }
+  if (widget.type === "combo") {
+    // Wheel up = previous entry, wheel down = next entry (like the editors above).
+    if (typeof widget.incrementValue === "function" && typeof widget.decrementValue === "function") {
+      (direction > 0 ? widget.decrementValue : widget.incrementValue).call(widget, { e: event, node, canvas });
+      return true;
+    }
+    let values = widget.options?.values ?? widget.values;
+    if (typeof values === "function") values = values(widget, node);
+    values = Array.isArray(values) ? values : Array.from(values ?? []);
+    if (values.length < 2) return false;
+    const i = values.indexOf(widget.value);
+    const next = i < 0 ? (direction > 0 ? values.length - 1 : 0) : Math.min(values.length - 1, Math.max(0, i - direction));
+    setWidgetValue(node, widget, values[next], event, canvas);
+    return true;
+  }
+  return false;
+}
+
+// Returns true when the wheel was used for a widget (the caller then blocks zoom / pan).
+function handleWheelOnWidget(canvas, e) {
+  if (!canvas || canvas.read_only || e.ctrlKey || e.metaKey || e.shiftKey || !e.deltaY) return false;
+  if (typeof canvas.adjustMouseEvent !== "function") return false;
+  canvas.adjustMouseEvent(e);
+  const hit = widgetUnderMouse(canvas);
+  return !!hit && wheelWidgetValue(hit.node, hit.widget, e.deltaY < 0 ? 1 : -1, e, canvas);
+}
+
+function installCanvasWidgetWheel() {
+  const canvas = app.canvas;
+  const proto = canvas?.constructor?.prototype;
+  if (!proto || typeof proto.processMouseWheel !== "function") return false;
+  if (!proto._mttWheelWidgets) {
+    const original = proto.processMouseWheel;
+    proto._mttWheelWidgets = true;
+    proto.processMouseWheel = function (e) {
+      try {
+        if (handleWheelOnWidget(this, e)) {
+          e.preventDefault(); // change the value instead of zooming / panning the canvas
+          e.stopPropagation();
+          return;
+        }
+      } catch (err) {
+        console.error("[MultiTabText] wheel on widget failed:", err);
+      }
+      return original.call(this, e);
+    };
+  }
+  // LiteGraph bound its wheel listener when the canvas was created, so that bound function still
+  // points at the old method. Bind the canvas to the patched method instead.
+  const canvasEl = canvas.canvas;
+  if (canvasEl && !canvas._mttWheelRebound) {
+    const old = canvas._mousewheel_callback;
+    if (typeof old === "function") {
+      canvas._mttWheelRebound = true;
+      canvasEl.removeEventListener("wheel", old, false);
+      canvasEl.removeEventListener("mousewheel", old, false);
+      canvasEl.removeEventListener("DOMMouseScroll", old, false);
+      canvas._mousewheel_callback = canvas.processMouseWheel.bind(canvas);
+      canvasEl.addEventListener("wheel", canvas._mousewheel_callback, false);
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // ComfyUI-Lora-Manager bridge: lets "Send to workflow" target MultiTabText and
 // writes the received prompt / LoRA syntax into the ACTIVE tab.
 // ---------------------------------------------------------------------------
@@ -1155,6 +1311,13 @@ app.registerExtension({
 
   async setup() {
     installLoraManagerBridge();
+    if (!installCanvasWidgetWheel()) {
+      // The canvas exists as soon as the app is set up, but try again briefly if it is not there yet.
+      const timer = setInterval(() => {
+        if (installCanvasWidgetWheel()) clearInterval(timer);
+      }, 500);
+      setTimeout(() => clearInterval(timer), 10000);
+    }
     const original = app.graphToPrompt;
     if (typeof original !== "function" || original._mttPatched) return;
     const patched = async function (...args) {

@@ -264,11 +264,13 @@ function normalizeNumber(input, v) {
 }
 
 // A number input for INT / FLOAT values (steps, cfg). Typed values are stored right away; when the field is left
-// they are clamped to ComfyUI's min / max (and rounded for INT / to the node's precision for FLOAT).
+// they are clamped to ComfyUI's min / max (and rounded for INT / to the node's precision for FLOAT). The mouse wheel
+// changes the value by one step while the pointer is over the field.
 function numberField(store, input, save) {
   const num = document.createElement("input");
   num.type = "number";
   num.className = "mtm-num";
+  num.setAttribute("data-capture-wheel", "true"); // let the wheel handler run instead of ComfyUI's canvas zoom
   if (input.min !== undefined) num.min = String(input.min);
   if (input.max !== undefined) num.max = String(input.max);
   num.step = String(input.step ?? 1);
@@ -288,6 +290,22 @@ function numberField(store, input, save) {
     num.value = String(v);
     save();
   });
+  num.addEventListener(
+    "wheel",
+    (e) => {
+      if (num.disabled || !e.deltaY) return;
+      e.preventDefault(); // change the value instead of scrolling the node / canvas
+      e.stopPropagation();
+      closePopup();
+      const step = Math.abs(Number(input.step)) || 1;
+      const base = normalize(typed() ?? defaultFor(input, false));
+      const v = normalize(base + (e.deltaY < 0 ? step : -step));
+      store[input.name] = v;
+      num.value = String(v);
+      save();
+    },
+    { passive: false }
+  );
   ["keydown", "keyup"].forEach((ev) => num.addEventListener(ev, (e) => e.stopPropagation())); // no ComfyUI shortcuts while typing
   return num;
 }
@@ -309,6 +327,7 @@ function openPopup(field, choices, current, onPick) {
   const pop = document.createElement("div");
   pop.className = "mtm-pop";
   pop.tabIndex = -1;
+  pop.setAttribute("data-capture-wheel", "true"); // wheel scrolls the list instead of zooming the canvas
 
   let filter = null;
   if (choices.length > FILTER_MIN_ENTRIES) {
@@ -761,6 +780,7 @@ function createEditor(node, selectionWidget) {
   const tabbar = el("div", "mtm-tabbar");
   const toolbar = el("div", "mtm-toolbar");
   const groupsEl = el("div", "mtm-groups");
+  groupsEl.setAttribute("data-capture-wheel", "true"); // scroll the group list instead of zooming the canvas
   root.append(tabbar, toolbar, groupsEl);
   outer.append(root);
 
@@ -876,6 +896,7 @@ function createEditor(node, selectionWidget) {
         const field = el("div", "mtm-select");
         field.tabIndex = 0;
         field.setAttribute?.("role", "combobox");
+        field.setAttribute?.("data-capture-wheel", "true"); // wheel steps through the choices instead of zooming the canvas
         const textEl = el("span", "mtm-sel-text");
         field.append(textEl, el("span", "mtm-caret", "\u25be"));
         const current = tab[g.key][input.name];
@@ -896,6 +917,23 @@ function createEditor(node, selectionWidget) {
             save();
           });
         };
+        // Mouse wheel steps through the choices (like ComfyUI's own combo widgets).
+        field.addEventListener(
+          "wheel",
+          (e) => {
+            if (activePopup?.field === field || !e.deltaY) return; // an open list closes on scroll
+            e.preventDefault();
+            e.stopPropagation();
+            closePopup();
+            const values = choices.map(([value]) => value);
+            const i = values.indexOf(tab[g.key][input.name] ?? "");
+            const next = i < 0 ? (e.deltaY < 0 ? values.length - 1 : 0) : (i + (e.deltaY < 0 ? -1 : 1) + values.length) % values.length;
+            tab[g.key][input.name] = values[next];
+            show();
+            save();
+          },
+          { passive: false }
+        );
         field.addEventListener("click", open);
         field.addEventListener("keydown", (e) => {
           if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(e.key)) {
@@ -948,6 +986,32 @@ function createEditor(node, selectionWidget) {
     Array.from(tabbar.querySelectorAll(".mtm-tab")).forEach((n, idx) => n.classList.toggle("active", idx === i));
     renderGroups();
   };
+
+  // Scroll the tab bar just enough to show a tab (only horizontally).
+  const revealTab = (i) => {
+    const tab = tabbar.querySelectorAll(".mtm-tab")[i];
+    if (!tab) return;
+    const bar = tabbar.getBoundingClientRect();
+    const rect = tab.getBoundingClientRect();
+    if (rect.left < bar.left) tabbar.scrollLeft -= bar.left - rect.left + 2;
+    else if (rect.right > bar.right) tabbar.scrollLeft += rect.right - bar.right + 2;
+  };
+
+  // Mouse wheel over the tab bar switches tabs (up = previous, down = next, wrapping around).
+  tabbar.setAttribute("data-capture-wheel", "true");
+  tabbar.addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.deltaY || state.tabs.length < 2 || e.target?.closest?.(".mtm-rename")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const step = e.deltaY < 0 ? -1 : 1;
+      const next = (state.active + step + state.tabs.length) % state.tabs.length;
+      selectTab(next);
+      revealTab(next);
+    },
+    { passive: false }
+  );
 
   const addTab = (tab = null) => {
     state.tabs.push(tab ?? normalizeTab({ name: uniqueName() }, state.tabs.length));
