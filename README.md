@@ -16,14 +16,14 @@ Eight nodes for ComfyUI:
 All nodes are in the add-node menu under **MultiTabText** (double-click the canvas and search for "MultiTabText").
 
 ---
-![mtremovetext.JPG](img/multitabtxt.JPG)
-![multitabmodels.JPG](img/rem_tags.JPG)
-![multitabtext.JPG](img/res_sel.JPG)
-![textfile.JPG](img/lora_txt_load.JPG)
-![textfile.JPG](img/txtwrite.JPG)
-![textfile.JPG](img/listfiles.JPG)
-![textfile.JPG](img/txtread.JPG)
-![textfile.JPG](img/modelstab.JPG)
+![mtremovetext.JPG](img/multitabtxt.png)
+![multitabmodels.JPG](img/rem_tags.png)
+![multitabtext.JPG](img/res_sel.png)
+![textfile.JPG](img/lora_txt_load.png)
+![textfile.JPG](img/txtwrite.png)
+![textfile.JPG](img/listfiles.png)
+![textfile.JPG](img/txtread.png)
+![textfile.JPG](img/modelstab.png)
 ---
 
 ## Installation
