@@ -1,6 +1,10 @@
 """
 MultiTabText - the main node: a tabbed text editor (comments, random selectors). Any number of
-optional `text` inputs (text, text_2, ...) are added before (default) or after the output when connected.
+optional `text` inputs (text, text_2, ...) are added before (default) or after the output when
+connected. A tab may also reference a connected text with `%text%`, `%text_2%`, ... (or
+`[%text%]`, `[%text_2%]`, where the brackets are dropped); the referenced text is
+inserted where the placeholder is, and is also added before / after the output unless
+the editor's "Output input" checkbox is unchecked.
 
 The text is typed into a tabbed editor (see web/multi_tab_text.js). The editor
 stores all tabs as JSON in a hidden widget called `tabs_data`. On execution every
@@ -31,16 +35,18 @@ may then use `%model%`, `%model_type%` and the other placeholders, plus `@if` / 
 
 import functools
 import json
+import math
 import os
 import random
 import re
+from collections import OrderedDict
 
 try:  # imported as part of the package (ComfyUI)
     from .prompt_vars import apply_conditionals, build_context, substitute_variables, uses_prompt_data
 except ImportError:  # loaded as a plain module (tests, tools)
     from prompt_vars import apply_conditionals, build_context, substitute_variables, uses_prompt_data
 
-BUILD = "2026-10-22.2"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
+BUILD = "2026-10-29.11"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
 
 # Set the environment variable MULTITABTEXT_DEBUG=1 before starting ComfyUI to log what each run receives.
 _DEBUG = os.environ.get("MULTITABTEXT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
@@ -192,24 +198,27 @@ def process_text(text: str, rng=None, drop_empty: bool = False, context=None) ->
 
 def _read_state(raw: str):
     """
-    Returns (texts, drop_empty_lines, in_front) from the editor state.
+    Returns (texts, drop_empty_lines, in_front, output_inputs) from the editor state.
     texts: every CHECKED tab in tab order; if no tab is checked, the active tab
     (so workflows saved before checkboxes existed behave as before).
     drop_empty_lines: the "Remove empty lines" checkbox, stored in the same state.
     in_front: the "In front" checkbox - connected texts go before (True, the default) or after the tabs' text.
+    output_inputs: the "Output input" checkbox - when False, connected texts are not added in front of / after
+    the tabs; they are only used where a tab references them (%text%, %text_2%, ...).
     """
     try:
         data = json.loads(raw)
         tabs = data["tabs"]
         drop = data.get("removeEmptyLines") is True
         in_front = data.get("inFront") is not False  # missing / anything but an explicit false -> in front
+        output_inputs = data.get("outputInput") is not False  # missing -> output connected texts
         checked = [str(t.get("text", "")) for t in tabs if t.get("checked")]
         if checked:
-            return checked, drop, in_front
+            return checked, drop, in_front, output_inputs
         idx = max(0, min(int(data.get("active", 0)), len(tabs) - 1))
-        return [str(tabs[idx].get("text", ""))], drop, in_front
+        return [str(tabs[idx].get("text", ""))], drop, in_front, output_inputs
     except Exception:
-        return [str(raw)], False, True  # not JSON: treat as plain text
+        return [str(raw)], False, True, True  # not JSON: treat as plain text
 
 
 def _selected_texts(raw: str):
@@ -272,22 +281,41 @@ class RandomTextTabs:
             return float("nan")
 
     def run(self, tabs_data, text=None, prompt=None, unique_id=None, **kwargs):
-        texts, drop_empty, in_front = _read_state(tabs_data)
-        # The graph is only inspected when a tab actually uses a placeholder or a conditional.
-        context = build_context(prompt, unique_id) if any(uses_prompt_data(t) for t in texts) else None
-        result = process_tabs(texts, context=context)
+        texts, drop_empty, in_front, output_inputs = _read_state(tabs_data)
 
-        # Connected texts (`text`, then `text_2`, `text_3`, ... added by the frontend) go in FRONT of the
-        # editor's output ("In front" checked, the default) or AFTER it (unchecked), in socket order, one per line. They are used as received (comments / {a|b}
-        # selectors / %placeholders% are only processed inside the editor's own tabs). Empty texts are skipped.
+        # Connected texts, in socket order: `text`, then `text_2`, `text_3`, ... added by the frontend.
         extras = []
         for key, value in kwargs.items():
             m = _TEXT_KEY.match(key)
             if m:
                 extras.append((int(m.group(1)), value))
-        incoming = [text] + [v for _, v in sorted(extras, key=lambda kv: kv[0])]
-        prefixes = [str(v).rstrip("\r\n") for v in incoming if v is not None]
-        prefixes = [p for p in prefixes if p.strip()]
+        extras.sort(key=lambda kv: kv[0])
+        input_values = {}
+        if text is not None:
+            input_values["text"] = str(text)
+        for index, value in extras:
+            if value is not None:
+                input_values["text_%d" % index] = str(value)
+
+        # The graph is only inspected when a tab actually uses a placeholder or a conditional.
+        context = build_context(prompt, unique_id) if any(uses_prompt_data(t) for t in texts) else None
+        if context is not None:
+            # Let a tab reference a connected text as %text%, %text_2%, %text_3%, ...
+            for name, value in input_values.items():
+                context.set(name, value)
+        result = process_tabs(texts, context=context)
+
+        # A connected text referenced with a placeholder is inserted where the placeholder is. When "Output input"
+        # is checked (the default) the connected texts are ALSO added as before: in FRONT of the editor's output
+        # ("In front" checked, the default) or AFTER it (unchecked), in socket order, one per line. A referenced
+        # text can therefore appear twice: once at the placeholder and once in front of / after the tabs. When
+        # "Output input" is unchecked, only the placeholder insertion is kept. Texts are used as received
+        # (comments / {a|b} selectors / %placeholders% are only processed inside the editor's own tabs). Empty
+        # texts are skipped.
+        prefixes = []
+        if output_inputs:
+            prefixes = [value.rstrip("\r\n") for value in input_values.values()]
+            prefixes = [p for p in prefixes if p.strip()]
         if prefixes:
             if in_front:
                 pieces = prefixes + ([result] if result else [])
@@ -299,7 +327,8 @@ class RandomTextTabs:
         if _DEBUG:
             _debug(
                 f"MultiTabText.run build={BUILD} removeEmptyLines={drop_empty} tabs_used={len(texts)} "
-                f"texts_connected={len(prefixes)} in_front={in_front} lines_out={result.count(chr(10)) + 1 if result else 0}"
+                f"texts_connected={len(prefixes)} in_front={in_front} output_input={output_inputs} "
+                f"lines_out={result.count(chr(10)) + 1 if result else 0}"
             )
         if context is not None:
             context.warn()
@@ -662,6 +691,25 @@ def _find_lora_file(name, files):
     return partial[0][2] if partial else None
 
 
+# ComfyUI re-runs this node whenever its `text` input (or any node it comes from) changes, even when
+# the <lora:...> tags are exactly the same. That happens on every queue with {a|b} selectors or model
+# placeholders, and applying a LoRA again is expensive (file read, key mapping, a new patched model).
+# Remember the last few results, so a run with the same base MODEL/CLIP, the same resolved files
+# (path, modification time and size) and the same strengths reuses them instead of loading again.
+# `id()` is safe as part of the key because the entry keeps the base objects alive.
+_LORA_CACHE = OrderedDict()  # (id(model), id(clip), tags) -> (model, clip, patched model, patched clip)
+_LORA_CACHE_LIMIT = 15
+
+
+def _lora_stamp(path):
+    """(modification time, size) of a LoRA file, so a replaced file is loaded again; None if unknown."""
+    try:
+        stat = os.stat(path)
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+
+
 class LoraTextLoader:
     """
     Loads the LoRAs written in `text` and outputs the prompt without the tags.
@@ -670,6 +718,9 @@ class LoraTextLoader:
     appear. A tag with no weight uses 1.0; a tag with one weight uses it for model and clip;
     a tag with two weights sets model and clip strength separately. Missing or invalid LoRAs
     are reported in the console and their tag is still removed from the prompt.
+
+    When a run only changes the rest of the prompt (same MODEL, CLIP, LoRA files and strengths),
+    the previously patched model and clip are reused instead of loading the LoRAs again.
 
     Based on comfyui_lora_tag_loader (badjeff), with separate clip strength and without
     touching angle brackets that are not LoRA tags.
@@ -710,6 +761,9 @@ class LoraTextLoader:
             print("[MultiTabText] WARNING: Lora Text Loader could not read the LoRA list ({}).".format(exc), flush=True)
             files = []
 
+        # Resolve every tag first. The reuse check uses the resolved files, not the prompt text, so
+        # changing anything outside the tags does not reload them.
+        jobs = []
         for tag in tags:
             if tag["error"]:
                 print("[MultiTabText] WARNING: Lora Text Loader ignored {}: {}.".format(tag["raw"], tag["error"]),
@@ -728,23 +782,288 @@ class LoraTextLoader:
                 print("[MultiTabText] WARNING: Lora Text Loader found {!r} in the LoRA list but not on disk; "
                       "its tag was removed from the prompt.".format(lora_name), flush=True)
                 continue
+            jobs.append((tag, lora_name, lora_path))
+
+        if not jobs:
+            return (model, clip, prompt)
+
+        cache_key = (id(model), id(clip), tuple(
+            (lora_path, _lora_stamp(lora_path), tag["model_strength"], tag["clip_strength"])
+            for tag, _name, lora_path in jobs
+        ))
+        cached = _LORA_CACHE.get(cache_key)
+        if cached is not None and cached[0] is model and cached[1] is clip:
+            _LORA_CACHE.move_to_end(cache_key)
+            print("[MultiTabText] Lora Text Loader: reusing {} already applied LoRA(s): {} "
+                  "(only the rest of the prompt changed).".format(
+                      len(jobs), ", ".join(tag["raw"] for tag, _name, _path in jobs)), flush=True)
+            return (cached[2], cached[3], prompt)
+
+        base_model, base_clip = model, clip
+        failed = False
+        for tag, lora_name, lora_path in jobs:
             try:
                 lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
                 model, clip = comfy.sd.load_lora_for_models(
                     model, clip, lora, tag["model_strength"], tag["clip_strength"])
             except Exception as exc:
+                failed = True
                 print("[MultiTabText] WARNING: Lora Text Loader could not load {!r}: {}.".format(lora_name, exc),
                       flush=True)
                 continue
             print("[MultiTabText] Lora Text Loader: loaded {} as {!r} (model={}, clip={}) from {}".format(
                 tag["raw"], lora_name, tag["model_strength"], tag["clip_strength"],
                 os.path.abspath(lora_path)), flush=True)
+
+        if not failed:  # never reuse a partially applied stack
+            _LORA_CACHE[cache_key] = (base_model, base_clip, model, clip)
+            while len(_LORA_CACHE) > _LORA_CACHE_LIMIT:
+                _LORA_CACHE.popitem(last=False)
         return (model, clip, prompt)
 
 
-NODE_CLASS_MAPPINGS = {"RandomTextTabs": RandomTextTabs, "RemoveTags": RemoveTags, "LoraTextLoader": LoraTextLoader}
+# Common aspect ratios: label -> (width units, height units). These use the
+# megapixels value to choose the actual size. The first eight match ComfyUI's
+# built-in ResolutionSelector node.
+ASPECT_RATIOS = OrderedDict([
+    ("1:1 (Square)", (1, 1)),
+    ("2:3 (Portrait Photo)", (2, 3)),
+    ("3:2 (Photo)", (3, 2)),
+    ("3:4 (Portrait Standard)", (3, 4)),
+    ("4:3 (Standard)", (4, 3)),
+    ("9:16 (Portrait Widescreen)", (9, 16)),
+    ("16:9 (Widescreen)", (16, 9)),
+    ("21:9 (Ultrawide)", (21, 9)),
+    ("5:4 (Landscape)", (5, 4)),
+    ("16:10 (Landscape)", (16, 10)),
+    ("2:1 (Wide)", (2, 1)),
+    ("4:5 (Portrait)", (4, 5)),
+    ("1:2 (Tall)", (1, 2)),
+    ("9:21 (Tall)", (9, 21)),
+])
+
+# Fixed, model-recommended resolutions: label -> (width, height). These ignore the
+# megapixels value and output the listed size (rounded to `multiple` if needed).
+RESOLUTION_PRESETS = OrderedDict([
+    # SD 1.5 (native 512)
+    ("SD 1.5 · 512×512 (1:1)", (512, 512)),
+    ("SD 1.5 · 512×768 (2:3)", (512, 768)),
+    ("SD 1.5 · 768×512 (3:2)", (768, 512)),
+    # SDXL / Pony / Illustrious (the nine 1 MP buckets)
+    ("SDXL/Pony/Illustrious · 1024×1024 (1:1)", (1024, 1024)),
+    ("SDXL/Pony/Illustrious · 1152×896 (9:7)", (1152, 896)),
+    ("SDXL/Pony/Illustrious · 896×1152 (7:9)", (896, 1152)),
+    ("SDXL/Pony/Illustrious · 1216×832 (19:13)", (1216, 832)),
+    ("SDXL/Pony/Illustrious · 832×1216 (13:19)", (832, 1216)),
+    ("SDXL/Pony/Illustrious · 1344×768 (7:4)", (1344, 768)),
+    ("SDXL/Pony/Illustrious · 768×1344 (4:7)", (768, 1344)),
+    ("SDXL/Pony/Illustrious · 1536×640 (12:5)", (1536, 640)),
+    ("SDXL/Pony/Illustrious · 640×1536 (5:12)", (640, 1536)),
+    # Krea 2 (1K to 2K)
+    ("Krea 2 · 1024×1024 (1:1, 1MP)", (1024, 1024)),
+    ("Krea 2 · 1536×1024 (3:2, 1.5MP)", (1536, 1024)),
+    ("Krea 2 · 1024×1536 (2:3, 1.5MP)", (1024, 1536)),
+    ("Krea 2 · 1440×1440 (1:1, 2MP)", (1440, 1440)),
+    ("Krea 2 · 1920×1080 (16:9, 2K)", (1920, 1080)),
+    ("Krea 2 · 1080×1920 (9:16, 2K)", (1080, 1920)),
+    # MOSS Image (1M, 1.5M and 2M recommended; both sides multiples of 16)
+    ("MOSS Image · 1024×1024 (1:1, 1MP)", (1024, 1024)),
+    ("MOSS Image · 1536×1024 (3:2, 1.5MP)", (1536, 1024)),
+    ("MOSS Image · 1024×1536 (2:3, 1.5MP)", (1024, 1536)),
+    ("MOSS Image · 1440×1440 (1:1, 2MP)", (1440, 1440)),
+    ("MOSS Image · 1792×1008 (16:9, 1.8MP)", (1792, 1008)),
+    ("MOSS Image · 1008×1792 (9:16, 1.8MP)", (1008, 1792)),
+    # Anima (works from 512² to 1536²; about 1K is optimal)
+    ("Anima · 1024×1024 (1:1, 1MP)", (1024, 1024)),
+    ("Anima · 1152×896 (9:7, 1MP)", (1152, 896)),
+    ("Anima · 896×1152 (7:9, 1MP)", (896, 1152)),
+    ("Anima · 1216×832 (19:13, 1MP)", (1216, 832)),
+    ("Anima · 832×1216 (13:19, 1MP)", (832, 1216)),
+])
+
+NO_PRESET = "None (use aspect ratio + megapixels)"
+MODEL_RESOLUTION_CHOICES = [NO_PRESET] + list(RESOLUTION_PRESETS.keys())
+
+
+def _multiple_value(multiple):
+    """A positive multiple as a float; 8 if the value is unusable."""
+    try:
+        m = float(multiple)
+    except (TypeError, ValueError):
+        return 8.0
+    return m if math.isfinite(m) and m > 0 else 8.0
+
+
+def snap_to_multiple(value, multiple):
+    """Nearest value that is a multiple of `multiple` (at least one multiple)."""
+    m = _multiple_value(multiple)
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = 1.0
+    if not math.isfinite(value):
+        value = 1.0
+    if abs(m - round(m)) < 1e-9:
+        mi = max(1, int(round(m)))
+        return max(mi, int(round(value / mi)) * mi)
+    # A fractional multiple cannot divide an integer exactly; get as close as possible.
+    return max(1, int(round(value / m) * m))
+
+
+def resolution_size(aspect_ratio, megapixels, multiple, model_recommended=NO_PRESET):
+    """
+    Width and height for a model preset, or for an aspect ratio and target megapixels.
+
+    A model preset is a fixed recommended size and ignores `megapixels`. Otherwise this
+    uses the same math as ComfyUI's built-in ResolutionSelector: 1 MP is 1024x1024
+    pixels, and each side is rounded to the nearest multiple of `multiple`.
+    """
+    preset = RESOLUTION_PRESETS.get(model_recommended)
+    if preset:
+        return snap_to_multiple(preset[0], multiple), snap_to_multiple(preset[1], multiple)
+
+    a, b = ASPECT_RATIOS.get(aspect_ratio, (1, 1))
+    g = math.gcd(a, b)
+    a, b = a // g, b // g
+    try:
+        target = max(0.0, float(megapixels)) * 1024.0 * 1024.0
+    except (TypeError, ValueError):
+        target = 1024.0 * 1024.0
+    if target <= 0:
+        target = 1024.0 * 1024.0
+
+    scale = math.sqrt(target / (a * b))
+    return snap_to_multiple(a * scale, multiple), snap_to_multiple(b * scale, multiple)
+
+
+class ResolutionSelector:
+    """
+    Outputs a width and a height for image generation.
+
+    Automatic mode: pick a common aspect ratio and a target megapixel count. The size
+    uses the same math as ComfyUI's built-in ResolutionSelector (1 MP is 1024x1024
+    pixels, each side rounded to the nearest multiple of `multiple`).
+    A model-recommended preset overrides that with a fixed size. Manual mode: type the
+    width and height yourself. `honour_multiple` then rounds both sides to the nearest
+    multiple (on by default); switch it off to use the typed values unchanged. `flip`
+    swaps width and height in the output, whichever mode produced them.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "manual": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "label_on": "manual size",
+                        "label_off": "auto size",
+                        "tooltip": "Off: use a model preset, or the aspect ratio and megapixels. On: use the width and height typed below.",
+                    },
+                ),
+                "aspect_ratio": (
+                    list(ASPECT_RATIOS.keys()),
+                    {
+                        "default": "1:1 (Square)",
+                        "tooltip": "Shape to keep in automatic mode. Ignored when a model preset is selected or manual is on.",
+                    },
+                ),
+                "megapixels": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.1,
+                        "max": 16.0,
+                        "step": 0.1,
+                        "tooltip": "Target size in megapixels (1 MP = 1024x1024 pixels). Ignored by model presets and manual mode.",
+                    },
+                ),
+                "model_recommended": (
+                    MODEL_RESOLUTION_CHOICES,
+                    {
+                        "default": NO_PRESET,
+                        "tooltip": "Fixed, commonly recommended size for a model family. Overrides aspect ratio and megapixels; only multiple can adjust it.",
+                    },
+                ),
+                "width": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 1,
+                        "max": 16384,
+                        "step": 1,
+                        "tooltip": "Width in pixels used when manual is on.",
+                    },
+                ),
+                "height": (
+                    "INT",
+                    {
+                        "default": 1024,
+                        "min": 1,
+                        "max": 16384,
+                        "step": 1,
+                        "tooltip": "Height in pixels used when manual is on.",
+                    },
+                ),
+                "multiple": (
+                    "FLOAT",
+                    {
+                        "default": 8.0,
+                        "min": 1.0,
+                        "max": 256.0,
+                        "step": 1.0,
+                        "tooltip": "Both sides are rounded to the nearest multiple of this value. Use 8 for most models, 16 for MOSS Image, and 32 or 64 when the model requires it.",
+                    },
+                ),
+                "honour_multiple": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "label_on": "multiple on",
+                        "label_off": "multiple off",
+                        "tooltip": "In manual mode, round width and height to the nearest multiple. Turn off to use the typed values unchanged.",
+                    },
+                ),
+                "flip": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "label_on": "flipped",
+                        "label_off": "normal",
+                        "tooltip": "Swap width and height in the output. Works in every mode, after the size has been chosen.",
+                    },
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("INT", "INT")
+    RETURN_NAMES = ("width", "height")
+    OUTPUT_TOOLTIPS = ("Final width in pixels.", "Final height in pixels.")
+    FUNCTION = "run"
+    CATEGORY = "MultiTabText"
+
+    def run(self, manual, aspect_ratio, megapixels, model_recommended, width, height, multiple, honour_multiple, flip=False):
+        if manual:
+            w, h = int(round(float(width))), int(round(float(height)))
+            if honour_multiple:
+                w, h = snap_to_multiple(w, multiple), snap_to_multiple(h, multiple)
+        else:
+            w, h = resolution_size(aspect_ratio, megapixels, multiple, model_recommended)
+        if flip:
+            w, h = h, w
+        return (max(1, w), max(1, h))
+
+
+NODE_CLASS_MAPPINGS = {
+    "RandomTextTabs": RandomTextTabs,
+    "RemoveTags": RemoveTags,
+    "LoraTextLoader": LoraTextLoader,
+    "MultiTabTextResolutionSelector": ResolutionSelector,
+}
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RandomTextTabs": "MultiTabText",
     "RemoveTags": "MultiTabText Remove Tags",
     "LoraTextLoader": "Lora Text Loader",
+    "MultiTabTextResolutionSelector": "Resolution Selector (MultiTabText)",
 }

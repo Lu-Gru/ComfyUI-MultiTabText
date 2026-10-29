@@ -74,6 +74,9 @@ def _warn_once(key, message):
 # ---------------------------------------------------------------------------
 
 _VAR_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
+# Substitution also accepts the bracket form [%name%]: the brackets are dropped, which makes
+# the placeholder stand out in the editor without adding brackets to the output.
+_SUB_RE = re.compile(r"\[%([A-Za-z_][A-Za-z0-9_]*)%\]|%([A-Za-z_][A-Za-z0-9_]*)%")
 
 # Every known placeholder, with an empty value: unknown names are therefore easy to tell apart.
 _EMPTY_VALUES = {
@@ -132,6 +135,10 @@ class PromptContext:
         self.lm_available = False     # ComfyUI-Lora-Manager's checkpoint scanner is usable
         self.requested = set()        # placeholders that were actually used
         self.unknown = set()          # placeholders that do not exist (kept as literal text)
+
+    def set(self, name: str, value) -> None:
+        """Add or replace a placeholder value (used for connected MultiTabText inputs)."""
+        self.values[str(name).casefold()] = "" if value is None else str(value)
 
     def value(self, name: str) -> str:
         key = str(name).casefold()
@@ -1039,13 +1046,13 @@ def substitute_variables(text: str, context) -> str:
     context = context or _EMPTY_CONTEXT
 
     def replace(match):
-        name = match.group(1)
+        name = match.group(1) or match.group(2)
         if name.casefold() in context.values:
             return context.value(name)
         context.unknown.add(name.casefold())
         return match.group(0)
 
-    return _VAR_RE.sub(replace, text)
+    return _SUB_RE.sub(replace, text)
 
 
 # ---------------------------------------------------------------------------

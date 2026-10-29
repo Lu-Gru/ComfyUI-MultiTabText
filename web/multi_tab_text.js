@@ -1,13 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] frontend extension loaded (build 2026-10-22.2)");
+console.log("[MultiTabText] frontend extension loaded (build 2026-10-29.11)");
 
 const NODE_NAME = "RandomTextTabs";
 const DATA_WIDGET = "tabs_data";
 
 const CSS = `
-.rtt-outer{position:relative;width:100%;height:100%;min-height:300px;box-sizing:border-box;}
+.rtt-outer{position:relative;width:100%;height:100%;min-height:0;box-sizing:border-box;overflow:hidden;}
 .rtt-root{position:absolute;inset:0;display:flex;flex-direction:column;box-sizing:border-box;gap:4px;
   font-family:system-ui,sans-serif;font-size:12px;color:var(--input-text,#ddd);}
 .rtt-tabbar{display:flex;flex-wrap:nowrap;gap:2px;overflow-x:auto;flex:0 0 auto;padding-bottom:2px;}
@@ -29,7 +29,7 @@ const CSS = `
 .rtt-btn.rtt-danger:hover{background:rgba(255,80,80,.35);filter:none;}
 .rtt-opt{display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;user-select:none;padding:0 4px;}
 .rtt-opt input{margin:0;cursor:pointer;}
-.rtt-body{position:relative;flex:1 1 auto;min-height:200px;border:1px solid var(--border-color,#555);border-radius:4px;
+.rtt-body{position:relative;flex:1 1 auto;min-height:0;border:1px solid var(--border-color,#555);border-radius:4px;
   background:var(--comfy-input-bg,#222);overflow:hidden;}
 .rtt-body.rtt-flash{border-color:#4299E0;box-shadow:0 0 0 1px #4299E0;}
 .rtt-scroll{position:absolute;inset:0;overflow:auto;}
@@ -46,6 +46,7 @@ const CSS = `
   text-align:right;color:#8a8a8a;user-select:none;}
 .rtt-grey .cm{color:#8a8a8a;}
 .rtt-grey .rtt-row.c::before{opacity:.35;text-decoration:line-through;}
+.rtt-hit{background:rgba(255,213,79,.3);border-radius:2px;}
 .rtt-text{position:absolute;top:6px;bottom:6px;left:var(--gw);right:0;margin:0;padding:0 8px 0 6px;border:none;outline:none;
   resize:none;overflow:hidden;background:transparent;color:transparent;caret-color:var(--input-text,#ddd);
   font:inherit;white-space:pre;}
@@ -63,7 +64,7 @@ function injectCSS() {
 }
 
 function defaultState() {
-  return { active: 0, wrap: false, greyComments: true, removeEmptyLines: false, inFront: true, importAppend: false, tabs: [{ name: "Tab 1", text: "" }] };
+  return { active: 0, wrap: false, greyComments: true, highlightMatches: true, spellcheck: false, removeEmptyLines: false, inFront: true, outputInput: true, importAppend: false, tabs: [{ name: "Tab 1", text: "" }] };
 }
 
 function normalizeState(o) {
@@ -74,7 +75,7 @@ function normalizeState(o) {
     checked: !!t?.checked,
   }));
   const active = Math.min(Math.max(parseInt(o.active) || 0, 0), tabs.length - 1);
-  return { active, wrap: !!o.wrap, greyComments: o.greyComments !== false, removeEmptyLines: o.removeEmptyLines === true, inFront: o.inFront !== false, importAppend: o.importAppend === true, tabs };
+  return { active, wrap: !!o.wrap, greyComments: o.greyComments !== false, highlightMatches: o.highlightMatches !== false, spellcheck: o.spellcheck === true, removeEmptyLines: o.removeEmptyLines === true, inFront: o.inFront !== false, outputInput: o.outputInput !== false, importAppend: o.importAppend === true, tabs };
 }
 
 function parseState(value) {
@@ -213,16 +214,32 @@ const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
 const NEEDS_ESC = /[&<>]/;
 const escHtml = (s) => (NEEDS_ESC.test(s) ? s.replace(/[&<>]/g, (c) => ESC_MAP[c]) : s);
 
-function rowHtml(line, inBlock) {
+// Escape a piece of text and wrap every occurrence of `term` (the selected text, or the word under the caret)
+// in a highlight span. `term` is always plain text; it is escaped separately for each match.
+function hitHtml(text, term) {
+  if (!term) return escHtml(text);
+  let at = text.indexOf(term);
+  if (at === -1) return escHtml(text);
+  let out = "";
+  let from = 0;
+  do {
+    out += escHtml(text.slice(from, at)) + `<span class="rtt-hit">${escHtml(term)}</span>`;
+    from = at + term.length;
+    at = text.indexOf(term, from);
+  } while (at !== -1);
+  return out + escHtml(text.slice(from));
+}
+
+function rowHtml(line, inBlock, term) {
   // Fast path for the common case: an ordinary line outside any block comment (no objects allocated).
   if (!inBlock && line.indexOf("/*") === -1 && !isCommentLine(line)) {
-    return { html: `<div class="rtt-row">${escHtml(line)}</div>`, inBlock: false };
+    return { html: `<div class="rtt-row">${hitHtml(line, term)}</div>`, inBlock: false };
   }
   const r = analyzeLine(line, inBlock);
   const text =
     r.parts.length === 1 && !r.parts[0].c
-      ? escHtml(r.parts[0].t)
-      : r.parts.map((p) => (p.c ? `<span class="cm">${escHtml(p.t)}</span>` : escHtml(p.t))).join("");
+      ? hitHtml(r.parts[0].t, term)
+      : r.parts.map((p) => (p.c ? `<span class="cm">${hitHtml(p.t, term)}</span>` : hitHtml(p.t, term))).join("");
   return {
     html: `<div class="rtt-row${r.whole ? " c" : ""}">${text}</div>`,
     inBlock: r.inBlock,
@@ -233,7 +250,7 @@ function rowHtml(line, inBlock) {
 // oldStates[i] = "inside a /* block */" before line i (length = oldLines.length + 1).
 // Returns null when nothing changed, else { start, oldEnd, html, states }: replace old rows
 // [start, oldEnd) with `html`. Rows after the edit are reused as long as the block-comment state matches.
-function planRows(oldLines, oldStates, lines) {
+function planRows(oldLines, oldStates, lines, term) {
   const n = lines.length;
   const m = oldLines.length;
   const min = Math.min(n, m);
@@ -250,7 +267,7 @@ function planRows(oldLines, oldStates, lines) {
   let k = p;
   for (; k < n; k++) {
     if (k >= end && inBlock === oldStates[k + delta]) break; // rest of the rows is unchanged
-    const r = rowHtml(lines[k], inBlock);
+    const r = rowHtml(lines[k], inBlock, term);
     html += r.html;
     inBlock = r.inBlock;
     states.push(inBlock);
@@ -304,9 +321,10 @@ function createEditor(node, dataWidget) {
   const rowsEl = el("div", "rtt-rows");
   const ta = el("textarea", "rtt-text");
   ta.wrap = "off";
-  ta.spellcheck = false;
+  ta.spellcheck = false; // the saved toolbar option is applied by applyView()
   ta.placeholder = "Type text here.\n# or // = comment line\n/* block comment */\n{red|green|} flower"
     + "\n%model% = model name; %model_type% outputs the model type (sdxl, pony, flux, anima, moss, ...)"
+    + "\n%text% = first connected text, %text_2% = second; [%text%]x[%text_2%] -> 1280x720"
     + "\n<lora:detail:0.8> = LoRA; <lora:style:0.6:0.4> = model:clip strength (Lora Text Loader)"
     + "\n\n@if %model_type% == flux\nhighly detailed photo\n"
     + "@elseif %model_type% == pony || %model_type% == sdxl || %model_type% == illustrious\n"
@@ -358,10 +376,11 @@ function createEditor(node, dataWidget) {
   let rowLines = [];
   let rowStates = [false];
   let gwDigits = 0;
+  let hitTerm = ""; // text whose occurrences are highlighted in the active tab
   const tpl = document.createElement("template");
   const renderRows = () => {
     const lines = ta.value.split("\n");
-    const plan = planRows(rowLines, rowStates, lines);
+    const plan = planRows(rowLines, rowStates, lines, hitTerm);
     if (!plan) return;
     const oldCount = rowLines.length;
     if (plan.start === 0 && plan.oldEnd >= oldCount) {
@@ -408,25 +427,94 @@ function createEditor(node, dataWidget) {
     });
   };
 
-  // Apply "wrap" / "grey comments" options to the view.
+  // ---------- highlight all occurrences of the selected text (or the word under the caret) ----------
+  // Only the rows that contain the old or the new term are rebuilt, so this stays cheap for long texts.
+  const WORD_CH = /[\p{L}\p{N}_]/u;
+  const wordAt = (text, pos) => {
+    let a = pos;
+    let b = pos;
+    while (a > 0 && WORD_CH.test(text[a - 1])) a--;
+    while (b < text.length && WORD_CH.test(text[b])) b++;
+    return text.slice(a, b);
+  };
+  const selectionTerm = () => {
+    const v = ta.value;
+    if (!v) return "";
+    const a = ta.selectionStart;
+    const b = ta.selectionEnd;
+    if (a !== b) {
+      const sel = v.slice(Math.min(a, b), Math.max(a, b)).trim();
+      return sel.includes("\n") ? "" : sel; // a multi-line selection cannot be marked per row
+    }
+    return wordAt(v, a);
+  };
+  const setHitTerm = (term) => {
+    if (term === hitTerm) return;
+    const oldTerm = hitTerm;
+    hitTerm = term;
+    const kids = rowsEl.children;
+    for (let i = 0; i < rowLines.length; i++) {
+      const line = rowLines[i];
+      const had = oldTerm && line.indexOf(oldTerm) !== -1;
+      const has = term && line.indexOf(term) !== -1;
+      if (!had && !has) continue;
+      const row = kids[i];
+      if (!row) continue;
+      tpl.innerHTML = rowHtml(line, rowStates[i], term).html;
+      row.replaceWith(tpl.content.firstElementChild);
+    }
+  };
+  let hitRaf = 0;
+  const refreshHits = () => {
+    if (hitRaf) return;
+    hitRaf = requestAnimationFrame(() => {
+      hitRaf = 0;
+      setHitTerm(state.highlightMatches === false ? "" : selectionTerm());
+    });
+  };
+  // Toolbar toggle: switching it off clears the marks immediately, switching it on re-reads the current selection.
+  const syncHighlight = () => {
+    if (hitRaf) {
+      cancelAnimationFrame(hitRaf);
+      hitRaf = 0;
+    }
+    if (state.highlightMatches === false) setHitTerm("");
+    else refreshHits();
+  };
+
+  // Apply the toolbar options to the view.
   let wrapCb = null;
   let greyCb = null;
+  let highlightCb = null;
+  let spellCb = null;
   let emptyCb = null;
   let frontCb = null;
+  let outputCb = null;
   let appendCb = null;
   const applyView = () => {
     scroll.classList.toggle("rtt-wrap", !!state.wrap);
     scroll.classList.toggle("rtt-grey", !!state.greyComments);
     ta.wrap = state.wrap ? "soft" : "off";
+    ta.spellcheck = state.spellcheck === true;
     if (wrapCb) wrapCb.checked = !!state.wrap;
     if (greyCb) greyCb.checked = !!state.greyComments;
+    if (highlightCb) highlightCb.checked = state.highlightMatches !== false;
+    if (spellCb) spellCb.checked = state.spellcheck === true;
     if (emptyCb) emptyCb.checked = !!state.removeEmptyLines;
     if (frontCb) frontCb.checked = state.inFront !== false;
+    if (outputCb) outputCb.checked = state.outputInput !== false;
     if (appendCb) appendCb.checked = state.importAppend === true;
   };
 
   const loadActive = () => {
     ta.value = state.tabs[state.active].text;
+    if (hitRaf) {
+      cancelAnimationFrame(hitRaf);
+      hitRaf = 0;
+    }
+    hitTerm = ""; // marks from the previous tab must not stay
+    rowLines = [];
+    rowStates = [false];
     renderRows();
   };
 
@@ -696,7 +784,7 @@ function createEditor(node, dataWidget) {
     "rtt-danger"
   );
 
-  const option = (label, title, key) => {
+  const option = (label, title, key, after) => {
     const l = el("label", "rtt-opt");
     l.title = title;
     const cb = document.createElement("input");
@@ -705,6 +793,7 @@ function createEditor(node, dataWidget) {
       state[key] = cb.checked;
       save();
       applyView();
+      if (after) after();
     };
     l.append(cb, document.createTextNode(label));
     toolbar.append(l);
@@ -712,10 +801,26 @@ function createEditor(node, dataWidget) {
   };
   wrapCb = option("Wrap text", "Wrap long lines instead of scrolling sideways", "wrap");
   greyCb = option("Grey comments", "Show comments (# or // lines, /* ... */ blocks) in grey", "greyComments");
+  highlightCb = option(
+    "Highlight occurrences",
+    "Highlight every occurrence of the selected text (or the word under the caret) in the current tab",
+    "highlightMatches",
+    syncHighlight
+  );
+  spellCb = option(
+    "Spell check",
+    "Use the browser's own spell checker (red underlines and right-click suggestions). Off by default: prompt tags, LoRA syntax and model placeholders are often flagged",
+    "spellcheck"
+  );
   frontCb = option(
     "In front",
     "Connected texts: checked = placed before this node's text, unchecked = placed after it",
     "inFront"
+  );
+  outputCb = option(
+    "Output input",
+    "Connected texts: checked = included in the output, unchecked = only included where the tabs reference them with %text%, %text_2%, ...",
+    "outputInput"
   );
   appendCb = option(
     "Append on import",
@@ -730,11 +835,17 @@ function createEditor(node, dataWidget) {
     state.tabs[state.active].text = ta.value;
     renderRows();
     ensureCaretVisible();
+    refreshHits();
     save();
   });
   ta.addEventListener("keyup", (e) => {
     if (e.key.startsWith("Arrow") || e.key === "PageUp" || e.key === "PageDown") ensureCaretVisible();
+    refreshHits();
   });
+  ta.addEventListener("select", refreshHits);
+  ta.addEventListener("mouseup", refreshHits);
+  ta.addEventListener("click", refreshHits);
+  ta.addEventListener("focus", refreshHits);
   ta.addEventListener("blur", flush);
   // The textarea never scrolls itself (the outer container does); undo any drift so text stays aligned with the rows.
   ta.addEventListener("scroll", () => {
@@ -762,6 +873,13 @@ function createEditor(node, dataWidget) {
   const setText = (text) => {
     state.tabs[state.active].text = String(text ?? "");
     ta.value = state.tabs[state.active].text;
+    if (hitRaf) {
+      cancelAnimationFrame(hitRaf);
+      hitRaf = 0;
+    }
+    hitTerm = "";
+    rowLines = [];
+    rowStates = [false];
     renderRows();
     save();
     flashBody();
@@ -939,6 +1057,8 @@ function ensureOffMain(graph, out, node, building = new Set()) {
       active: 0,
       removeEmptyLines: own.removeEmptyLines,
       inFront: own.inFront,
+      // Bypassed / muted: always pass the connected texts on, even when the node's own "Output input" is off.
+      outputInput: true,
       tabs: [{ name: "off", text: "", checked: false }],
     }),
   };
@@ -1393,6 +1513,16 @@ app.registerExtension({
       }
       this._rtt?.reload();
       scheduleRegistryRefresh();
+      // Old workflows can store a node smaller than the editor's minimum height. Grow it once so the
+      // text area always stays inside the node instead of spilling over the canvas.
+      try {
+        const min = this.computeSize();
+        if (this.size[0] < min[0] || this.size[1] < min[1]) {
+          this.setSize([Math.max(this.size[0], min[0]), Math.max(this.size[1], min[1])]);
+        }
+      } catch (e) {
+        /* a missing computeSize must not break loading the workflow */
+      }
       return r;
     };
 

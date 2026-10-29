@@ -41,7 +41,7 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    The `web/` folder is required. It contains the editor. Without it you only get a plain one-line text field.
    `prompt_vars.py` is required too: it holds the model detection and `@if` / `%placeholder%` support.
 3. Start ComfyUI. The terminal should print:
-   `[MultiTabText] Python side loaded (build 2026-10-22.2) from ...`
+   `[MultiTabText] Python side loaded (build 2026-10-29.11) from ...`
 4. Hard-refresh the browser (**Ctrl+F5**).
 5. Add the node. Delete any older copy of the node first, because nodes keep the widgets they were created with.
 
@@ -64,7 +64,9 @@ No extra Python packages are needed.
   - Each tab holds its own text and has a **checkbox**. **Every checked tab is output**, in tab order (left to right), joined with new lines. Each tab is processed on its own, so a comment or selector in one tab never affects another.
   - If **no tab is checked**, the **active** (selected) tab is output, so existing workflows behave as before.
 - **Line numbers** are shown beside the text.
-- **Clear all** closes all tabs and clears all text, leaving one empty tab. It asks for confirmation first (unless the node is already empty) and keeps the toolbar options (wrap, grey comments, in front, append on import, remove empty lines). It cannot be undone.
+- **Highlight occurrences**: select text, or just click a word, and every occurrence of it in the **current tab** is highlighted, so repeated tags and phrases are easy to spot. Multi-line selections are not highlighted. The **Highlight occurrences** checkbox in the toolbar switches this on and off (on by default); it is saved with the editor's other options.
+- **Spell check**: uses the browser's own spell checker, so misspelled words get the usual red underline and right-click suggestions. It is **off by default**, because prompt tags, LoRA syntax and model placeholders are often flagged. The browser and its dictionary settings decide the language, and the native suggestions need the normal browser context menu. The **Spell check** checkbox is saved with the editor's other options.
+- **Clear all** closes all tabs and clears all text, leaving one empty tab. It asks for confirmation first (unless the node is already empty) and keeps the toolbar options (wrap, grey comments, highlight occurrences, spell check, in front, output input, append on import, remove empty lines). It cannot be undone.
 - **Export tab** saves the active tab as a `.txt` file. **Import tab(s)** loads one or more `.txt` files, each into a new tab.
 - **Export all** saves every tab (names, text, tab checkboxes and the toolbar options) to one `.json` file.
 - **Import all** loads such a file. With **Append on import** unticked (the default) it **replaces** all current tabs and the toolbar options (after a confirmation). With it ticked, the imported tabs are **added after** the current ones, the first imported tab becomes the active tab, and your current toolbar options stay as they are. The checkbox itself is not taken from the file.
@@ -138,7 +140,7 @@ MultiTabText can read the model of the workflow and put its name and type into t
 %model_type% / %model% / %ckpt% / %loras%
 ```
 
-`%model%` is empty when no checkpoint or diffusion model is found, and the console prints a warning once. Placeholders can be used in any tab, as often as you like, and are case-insensitive (`%MODEL%` works too). Text connected to the `text` sockets is passed through unchanged, so placeholders there are not replaced.
+`%model%` is empty when no checkpoint or diffusion model is found, and the console prints a warning once. Placeholders can be used in any tab, as often as you like, and are case-insensitive (`%MODEL%` works too). Text connected to the `text` sockets is passed through unchanged, so placeholders there are not replaced. A tab can pull a connected text into itself with `%text%`, `%text_2%`, ... (see [Text inputs](#text-inputs)).
 
 **How the model is found:** the node starts at the sampler(s) that use its text (also through `ConditioningCombine`, `FluxGuidance`, guider nodes, ...), follows `model` / `guider` / pipe links upstream and reports the first checkpoint or diffusion model it meets. A checkpoint that is only wired to the text encoder's `clip` input is therefore not mistaken for the model. If the text is not connected to a sampler at all, the nearest loader in the workflow is used. This also works with **MultiTabModels** from this package (it reads the active tab's choice) and with the usual custom loaders (`CheckpointLoaderSimple`, `UNETLoader`, GGUF, Nunchaku, Efficient Loaders, ...).
 
@@ -214,6 +216,40 @@ The **In front** checkbox in the toolbar decides where they go (checked by defau
 
 Connected texts are always in socket order, one per line.
 
+The **Output input** checkbox (next to **In front**, checked by default) decides whether connected texts are added automatically in front of / after the tabs. When it is unchecked, no connected text is added automatically; a text referenced inside a tab (`%text%`, `%text_2%`, ...) is still inserted where the placeholder is. When it is checked, the normal behaviour above applies to every connected text, **even when it is also referenced**: the referenced text is inserted at the placeholder and also output in front of / after the tabs, so it can appear twice. Uncheck **Output input** when an input should only be used inside the tabs' text, for example `[%text%]x[%text_2%]`.
+
+#### Referencing a connected text
+
+A tab can also use a connected text inside its own text with a placeholder: `%text%`, `%text_2%`, `%text_3%`, and so on. The placeholder is replaced with the text that arrives on that socket.
+
+For example, with `text` = `1280` and `text_2` = `720`, a tab containing:
+
+```text
+%text%x%text_2%
+```
+
+produces the tab line `1280x720`. With **Output input** checked (the default) and **In front** checked, the complete output is:
+
+```text
+1280
+720
+1280x720
+```
+
+because the two inputs are also added in front of the tabs. Untick **Output input** to get only `1280x720`.
+
+The bracket form `[%text%]` / `[%text_2%]` also works (and so does the bracket form of any placeholder, such as `[%model%]`): the square brackets are dropped, so the same example can be written as `[%text%]x[%text_2%]`.
+
+- A referenced text is inserted where the placeholder is. It is also added in front of / after the tabs when **Output input** is checked, so it appears twice; when **Output input** is unchecked it only appears at the placeholder.
+- Unreferenced connected texts keep the normal behaviour described above, unless **Output input** is unchecked.
+- `%text%` is the first socket, `%text_2%` the second, `%text_3%` the third, matching the socket names.
+- References are case-insensitive (`%TEXT%` works too).
+- A reference inside a comment or a false `@if` branch is not inserted (the connected text is still output normally).
+- If the socket is not connected, the placeholder is left as written (and a warning is printed once).
+- Referenced texts are used as received; their own placeholders and `{a|b}` selectors are not processed.
+
+The rest of the rules are unchanged:
+
 - Connected texts are used as received. Comments and `{a|b}` selectors are only processed inside the editor's own tabs.
 - Empty texts are skipped. If the tabs produce nothing, the output is just the connected texts.
 - When the texts are placed after the tabs, trailing line breaks of the tabs' text are dropped, so no stray blank line appears in between.
@@ -231,7 +267,7 @@ Bypassing (Ctrl+B) or muting (Ctrl+M) MultiTabText switches off its own tabs, bu
 | Muted | yes | the connected texts, joined one per line |
 | Muted | no | nothing: the node is simply left out of the run, like any muted node |
 
-- The connected texts follow the node's own toolbar settings: **In front** does not matter here (there are no tabs), and **Remove empty lines** still applies.
+- The connected texts follow the node's own toolbar settings: **In front** does not matter here (there are no tabs), **Output input** is ignored (connected texts are always passed on), and **Remove empty lines** still applies.
 - Connected sources that are bypassed or muted themselves are ignored.
 - This works for nodes connected directly, through Reroute nodes, through other bypassed nodes, and for chains of several bypassed or muted MultiTabText nodes.
 - ComfyUI's usual "pass the first input straight through" for bypassed nodes is replaced by this behaviour.
@@ -303,6 +339,16 @@ Every LoRA that is applied is printed in the ComfyUI console with its tag, the r
 ```
 
 This also shows which file a prefix matched. The path is absolute, so symlinked or extra model folders are visible too.
+
+### Repeated runs
+
+ComfyUI runs this node again whenever the prompt text changes, even when the `<lora:...>` tags are identical. That happens on every queue with `{a|b}` selectors or `%placeholders%` in the text. To avoid loading the same files and patching the model again, the node remembers the last fifteen results and reuses an already patched MODEL and CLIP when all of these are the same:
+
+- the incoming MODEL and CLIP (same checkpoint or upstream loader),
+- the resolved LoRA files, including their modification time and size,
+- the order of the tags and both strengths.
+
+Changing only ordinary prompt text therefore does no LoRA work. Changing a tag, a strength, a LoRA file or the checkpoint loads again. A reused run prints `[MultiTabText] Lora Text Loader: reusing ... already applied LoRA(s): ...` in the console instead of the `loaded ...` lines.
 
 ### Missing or invalid tags
 
@@ -382,6 +428,86 @@ If **Remove Tags** is **bypassed** (Ctrl+B), it **passes its text through unchan
 ### Bypassed or muted sources
 
 If a node feeding a `text` socket is bypassed or muted, that input is ignored and the remaining inputs are processed. If nothing is left, the node outputs an empty string.
+
+---
+
+## Resolution Selector (MultiTabText)
+
+Outputs a `width` and a `height` (both `INT`) for image generation. It expands ComfyUI's built-in **Resolution Selector** with more aspect ratios, model-recommended presets and a manual size. It is a separate node (`MultiTabTextResolutionSelector`) so the built-in node is not replaced.
+
+Hover any input or output to see a tooltip describing what it does.
+
+The node has three sources, checked in this order:
+
+1. **manual** is on: the typed **width** and **height** are used.
+2. **model_recommended** is not `None`: that fixed preset is used; `aspect_ratio` and `megapixels` are ignored.
+3. Otherwise: **aspect_ratio** and **megapixels** are used.
+
+After the size is chosen, **flip** swaps width and height. It works in every mode and is off by default.
+
+### Automatic size
+
+Leave **manual** off (the switch shows *auto size*) and leave **model_recommended** at `None (use aspect ratio + megapixels)`. Then choose an **aspect_ratio**, type **megapixels** and type **multiple** (8 by default). These are regular number fields, the same as in ComfyUI's built-in Resolution Selector, so a value can be typed directly (click the field; in the legacy canvas, click the middle of the widget).
+
+The node uses the same math as ComfyUI's built-in Resolution Selector: **1 MP is 1024 × 1024 pixels**, and each side is rounded to the nearest multiple of `multiple`. For example, at 1 megapixel with multiple 8:
+
+| Aspect ratio | Output |
+|--------------|--------|
+| `1:1 (Square)` | `1024 × 1024` |
+| `4:3 (Standard)` | `1184 × 888` |
+| `3:2 (Photo)` | `1256 × 840` |
+| `16:9 (Widescreen)` | `1368 × 768` |
+| `21:9 (Ultrawide)` | `1568 × 672` |
+| `9:16 (Portrait Widescreen)` | `768 × 1368` |
+
+Each side is rounded independently, so the real megapixel count and the exact ratio can shift slightly (for example, `16:9` at 1 MP with multiple 8 gives `1368 × 768`). A larger multiple makes the shift larger. This is intentional: it matches ComfyUI's built-in node exactly.
+
+Available ratios: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `9:16`, `16:9`, `21:9` (the same eight as the built-in node) plus `5:4`, `16:10`, `2:1`, `4:5`, `1:2` and `9:21`.
+
+### Model-recommended sizes
+
+Choose a preset in **model_recommended** to output a fixed, commonly recommended size. The **megapixels** value does not change a preset; only `multiple` can adjust it.
+
+| Model family | Presets |
+|--------------|---------|
+| SD 1.5 | `512×512`, `512×768`, `768×512` |
+| SDXL / Pony / Illustrious | `1024×1024`; `1152×896`; `896×1152`; `1216×832`; `832×1216`; `1344×768`; `768×1344`; `1536×640`; `640×1536` |
+| Krea 2 | `1024×1024`; `1536×1024`; `1024×1536`; `1440×1440`; `1920×1080`; `1080×1920` |
+| MOSS Image | `1024×1024`; `1536×1024`; `1024×1536`; `1440×1440`; `1792×1008`; `1008×1792` |
+| Anima | `1024×1024`; `1152×896`; `896×1152`; `1216×832`; `832×1216` |
+
+Recommended `multiple` values:
+
+| Model family | Multiple |
+|--------------|----------|
+| SD 1.5 | 8 |
+| SDXL / Pony / Illustrious | 8 (the buckets are also multiples of 64) |
+| Krea 2 | 8 |
+| MOSS Image | **16** (required by the model) |
+| Anima | 8 (16 is also safe) |
+
+All presets are already on their model's recommended multiple, so the default 8 keeps them exact. A larger `multiple` can move a preset to the next allowed size.
+
+### Manual size
+
+Switch **manual** on (the switch shows *manual size*), then type **width** and **height**.
+
+- **honour_multiple** is on by default: both sides are rounded to the nearest multiple of `multiple`.
+- Switch **honour_multiple** off to output the typed width and height unchanged.
+- `aspect_ratio`, `megapixels` and `model_recommended` are ignored in manual mode.
+- A fractional `multiple` cannot divide an integer pixel exactly. Use a whole-number multiple (8, 16, 32, 64) when the exact multiple matters.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `manual` | off | Off: automatic or model preset. On: the typed width and height. |
+| `aspect_ratio` | `1:1 (Square)` | The shape to keep in automatic mode. |
+| `megapixels` | `1.0` | Target size in megapixels (0.1–16). |
+| `model_recommended` | `None` | A fixed recommended size; overrides aspect ratio and megapixels. |
+| `width` | `1024` | Manual width. |
+| `height` | `1024` | Manual height. |
+| `multiple` | `8` | Both sides are multiples of this value (1–256). |
+| `honour_multiple` | on | In manual mode, round width and height to the nearest multiple. |
+| `flip` | off | Swap width and height in the output. Works in every mode. |
 
 ---
 
@@ -587,27 +713,30 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. In **specific line** mode, a blank line is a valid empty text; otherwise check that the line number is not out of range (the message says how many lines the file has) or switch on **wrap**. **Random line** mode can also pick a blank line, and an empty file has no line to read. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
 | ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-22.2) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-22.2)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-29.11) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-29.11)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
 | MultiTabModels CLIP skip does nothing | Tick **use** under **Load Checkpoint** and choose a layer below `-1`. `-1` is the last layer and therefore changes nothing; `-2` skips one layer. It applies to the tab's final CLIP, including a separate **Load CLIP**. When LoRA Manager's **Send params to workflow** carries Clip Skip, it enables the setting for the active tab automatically. |
 | CLIP skip from "Send params to workflow" is not applied | Current public LoRA Manager displays Clip Skip but does not include it in the send request. Apply `patches/lora-manager-send-clip-skip.patch` in the LoRA Manager folder, restart ComfyUI, and hard-refresh the LoRA Manager tab. In the browser console (F12, *Verbose*) the send should then show `[MultiTabText] LoRA Manager sent clip_skip = ...`. Without the patch, use the node's own CLIP skip control. The value must be a number: `0` disables CLIP skip, `1` means the last layer, and `2` skips one layer. |
 | `%model%` stays as it is, or `%model_type%` is `unknown` | Check the console: the node prints a warning once when no checkpoint / diffusion model was found or when a placeholder name is unknown. The model must be reachable from the sampler that uses the text, otherwise the nearest loader is used. If a new model was renamed to a generic file, keep its family name in the folder (for example `Anima/model.safetensors`), or connect its separate CLIP and VAE loaders so the loader hints can identify it. With LoRA Manager installed, `%model_base%` / `%model_title%` need its checkpoint cache to be filled. |
 | Lora Text Loader removes the tag but does not change the model | The console names the reason: the LoRA is not in `models/loras`, its name is empty, or a strength is not a number. Matching ignores case and accepts the file name, its stem, a path or the beginning of a name. The last part is the clip strength only when four values are written: `<lora:name:model:clip>`. |
+| Lora Text Loader prints `loaded ...` on every queue | That is expected only when something really changed: the tag order, a strength, the checkpoint, or the LoRA file (its modification time or size). With only ordinary prompt text changing (random selectors, model placeholders), the node reuses the already patched model and prints `reusing ... already applied LoRA(s): ...` instead. Only the last fifteen combinations are remembered, so alternating between more than fifteen LoRA stacks reloads them. |
 | Nodes appear twice | An old copy of the package is still in `custom_nodes`. Remove it. |
 | Text lost after refresh | Make sure you are on the latest version, then hard-refresh. Use **Export all** for backups. |
 
 ## Notes
 
-- Saved workflows keep working across updates because the internal node IDs are unchanged (`RandomTextTabs`, `RemoveTags` and `LoraTextLoader`). Only the display names are `MultiTabText`, `MultiTabText Remove Tags` and `Lora Text Loader`.
+- Saved workflows keep working across updates because the internal node IDs are unchanged (`RandomTextTabs`, `RemoveTags`, `LoraTextLoader` and `MultiTabTextResolutionSelector`). Only the display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader` and `Resolution Selector (MultiTabText)`. The built-in ComfyUI `ResolutionSelector` is left untouched.
 - The editor is a custom web widget. Its tab data is stored in a hidden field called `tabs_data` and travels with the workflow.
 - Model placeholders and `@if` blocks need no sockets and no extra packages. They use ComfyUI's hidden `PROMPT` input, which every node receives anyway, so existing workflows and node layouts stay unchanged.
 
 ## Feature summary
 
-**MultiTabText:** a Duplicate tab button; any number of optional text inputs that are added before or after the output ("In front" option); a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; model placeholders (`%model%`, `%model_type%`, `%ckpt%`, `%loras%`, ...) with detection for recent families (Anima, MOSS Image, Krea 2, ...) from file names, CLIP type and CLIP/VAE loader pairs, and `@if` / `@elseif` / `@else` / `@endif` blocks without extra sockets, including exact LoRA Manager data when it is installed; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
+**MultiTabText:** a Duplicate tab button; any number of optional text inputs that are added before or after the output ("In front" option); a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; highlighting of all occurrences of the selected text (or the word under the caret) in the current tab, switchable in the toolbar; optional browser spell check, switchable in the toolbar; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; model placeholders (`%model%`, `%model_type%`, `%ckpt%`, `%loras%`, ...) with detection for recent families (Anima, MOSS Image, Krea 2, ...) from file names, CLIP type and CLIP/VAE loader pairs, and `@if` / `@elseif` / `@else` / `@endif` blocks without extra sockets, including exact LoRA Manager data when it is installed; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
 
 **MultiTabModels:** a Duplicate tab button; tabs with a LoRA text field (output `LORA`, comments supported), optional per-tab CLIP skip (CLIP Set Last Layer), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
 
-**Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
+**Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), reuses the already applied LoRAs when only the rest of the prompt changed (same model, files and strengths), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
+
+**Resolution Selector (MultiTabText):** outputs `width` and `height` as integers from a common aspect ratio and a megapixel target (the same math as ComfyUI's built-in Resolution Selector, both sides multiples of a chosen value), from a model-recommended preset for SD 1.5, SDXL, Pony, Illustrious, Krea 2, MOSS Image or Anima, or from a width and height typed by hand, with a toggle to round the manual values to the multiple or leave them unchanged. It expands ComfyUI's built-in Resolution Selector without replacing it.
 
 **ListFiles:** lists a folder's files (natural order, optional suffix filter, no sub folders / hidden files), outputs one by `index` (wrap-around option, *control after generate* for stepping through the folder) or all as a list, plus a joined text, the match count and an `errors` text.
 

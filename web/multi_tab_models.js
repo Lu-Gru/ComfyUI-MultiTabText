@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-22.2)");
+console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-29.11)");
 
 // MultiTabModels: tabs, each with a choice for ComfyUI's "Load Checkpoint", "Load Diffusion Model", "Load CLIP" and
 // "Load VAE", an optional CLIP skip (CLIP Set Last Layer), the sampler settings (steps, cfg, sampler_name, scheduler)
