@@ -1,11 +1,12 @@
 # MultiTabText
 
-Seven nodes for ComfyUI:
+Eight nodes for ComfyUI:
 
 | Node | Purpose |
 |------|---------|
-| **MultiTabText** | A tabbed text editor with any number of optional text inputs. Supports comments, random `{a\|b\|c}` selectors and line numbers. Outputs the text of all checked tabs (or the active tab if none is checked). |
+| **MultiTabText** | A tabbed text editor with any number of optional text inputs (referenced inside the text as `%text%`, `%text_2%`, ...). Supports comments, random `{a\|b\|c}` selectors and line numbers. Outputs the text of all checked tabs (or the active tab if none is checked). |
 | **MultiTabText Remove Tags** | Takes one or more text inputs, joins them, then removes or replaces tags. Replacements can be random. |
+| **Resolution Selector (MultiTabText)** | Outputs `width` and `height` from an aspect ratio and megapixel target, a model-recommended preset, or a manual size, with optional rounding to a multiple and a flip option. |
 | **Lora Text Loader** | Loads `<lora:name:model_strength:clip_strength>` tags from a prompt into MODEL and CLIP, and outputs the prompt without the tags. |
 | **TxtWriteFile** | Saves a text input to a file: overwrite it or append to it (optionally starting on a new line). Outputs the written text and the full path of the file. |
 | **ListFiles** | Lists the files of a folder (optionally only some suffixes) and outputs one of them (by index, with wrap-around) or all of them. |
@@ -73,6 +74,8 @@ No extra Python packages are needed.
 - **Wrap text** wraps long lines instead of scrolling sideways (off by default).
 - **Grey comments** shows comments in grey (on by default).
 - **Remove empty lines** (checkbox in the same toolbar) removes empty or whitespace-only lines from the output. It is **off by default**: with it unticked, blank lines in your tabs are kept exactly as typed. Like the other options it is saved in the editor's own data, so it is included in Export all / Import all.
+- The empty editor shows short examples of comments, selectors, model placeholders, text references and LoRA tags. The placeholder is only a hint and is never part of the output.
+- The node keeps a minimum height (about 340 px) so the tabs, toolbar and text area always fit. On a narrow node the toolbar can wrap onto more rows; the text area then shrinks instead of spilling outside the node. Workflows saved with an older, smaller node are grown to the minimum when loaded.
 
 Your text is saved with the workflow and survives page refreshes.
 
@@ -724,19 +727,19 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 
 ## Notes
 
-- Saved workflows keep working across updates because the internal node IDs are unchanged (`RandomTextTabs`, `RemoveTags`, `LoraTextLoader` and `MultiTabTextResolutionSelector`). Only the display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader` and `Resolution Selector (MultiTabText)`. The built-in ComfyUI `ResolutionSelector` is left untouched.
+- Saved workflows keep working across updates because the internal node IDs are unchanged: `RandomTextTabs`, `RemoveTags`, `LoraTextLoader`, `MultiTabTextResolutionSelector`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. Their display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader`, `Resolution Selector (MultiTabText)`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. The built-in ComfyUI `ResolutionSelector` is left untouched.
 - The editor is a custom web widget. Its tab data is stored in a hidden field called `tabs_data` and travels with the workflow.
 - Model placeholders and `@if` blocks need no sockets and no extra packages. They use ComfyUI's hidden `PROMPT` input, which every node receives anyway, so existing workflows and node layouts stay unchanged.
 
 ## Feature summary
 
-**MultiTabText:** a Duplicate tab button; any number of optional text inputs that are added before or after the output ("In front" option); a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; highlighting of all occurrences of the selected text (or the word under the caret) in the current tab, switchable in the toolbar; optional browser spell check, switchable in the toolbar; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; model placeholders (`%model%`, `%model_type%`, `%ckpt%`, `%loras%`, ...) with detection for recent families (Anima, MOSS Image, Krea 2, ...) from file names, CLIP type and CLIP/VAE loader pairs, and `@if` / `@elseif` / `@else` / `@endif` blocks without extra sockets, including exact LoRA Manager data when it is installed; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
+**MultiTabText:** a Duplicate tab button; any number of optional text inputs that are added before or after the output ("In front" option) or left out of the automatic output ("Output input" option), and that can be referenced inside a tab with `%text%`, `%text_2%`, ... / `[%text%]`; a Clear all button; tabs (add, remove, rename, reorder) with an output checkbox on each; line numbers; highlighting of all occurrences of the selected text (or the word under the caret) in the current tab, switchable in the toolbar; optional browser spell check, switchable in the toolbar; `#`, `//` and `/* */` comments with optional grey display; optional text wrapping; `{a|b|}` random selectors; remove-empty-lines option; model placeholders (`%model%`, `%model_type%`, `%ckpt%`, `%loras%`, ...) with detection for recent families (Anima, MOSS Image, Krea 2, ...) from file names, CLIP type and CLIP/VAE loader pairs, and `@if` / `@elseif` / `@else` / `@endif` blocks without extra sockets, including exact LoRA Manager data when it is installed; import and export of single tabs (`.txt`) and of all tabs (`.json`); bypass and mute output only the connected texts (an empty text if bypassed with nothing connected); text survives page refreshes; LoRA Manager "Send to workflow" support.
 
 **MultiTabModels:** a Duplicate tab button; tabs with a LoRA text field (output `LORA`, comments supported), optional per-tab CLIP skip (CLIP Set Last Layer), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
 
 **Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), reuses the already applied LoRAs when only the rest of the prompt changed (same model, files and strengths), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
 
-**Resolution Selector (MultiTabText):** outputs `width` and `height` as integers from a common aspect ratio and a megapixel target (the same math as ComfyUI's built-in Resolution Selector, both sides multiples of a chosen value), from a model-recommended preset for SD 1.5, SDXL, Pony, Illustrious, Krea 2, MOSS Image or Anima, or from a width and height typed by hand, with a toggle to round the manual values to the multiple or leave them unchanged. It expands ComfyUI's built-in Resolution Selector without replacing it.
+**Resolution Selector (MultiTabText):** outputs `width` and `height` as integers from a common aspect ratio and a megapixel target (the same math as ComfyUI's built-in Resolution Selector, both sides multiples of a chosen value), from a model-recommended preset for SD 1.5, SDXL, Pony, Illustrious, Krea 2, MOSS Image or Anima, or from a width and height typed by hand, with a toggle to round the manual values to the multiple or leave them unchanged, a **flip** option that swaps width and height in every mode, hover tooltips on all inputs and outputs, and regular number fields for the numeric settings. It expands ComfyUI's built-in Resolution Selector without replacing it.
 
 **ListFiles:** lists a folder's files (natural order, optional suffix filter, no sub folders / hidden files), outputs one by `index` (wrap-around option, *control after generate* for stepping through the folder) or all as a list, plus a joined text, the match count and an `errors` text.
 
