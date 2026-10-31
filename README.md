@@ -46,7 +46,7 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    The `web/` folder is required. It contains the editor. Without it you only get a plain one-line text field.
    `prompt_vars.py` is required too: it holds the model detection and `@if` / `%placeholder%` support.
 3. Start ComfyUI. The terminal should print:
-   `[MultiTabText] Python side loaded (build 2026-10-29.11) from ...`
+   `[MultiTabText] Python side loaded (build 2026-10-31.1) from ...`
 4. Hard-refresh the browser (**Ctrl+F5**).
 5. Add the node. Delete any older copy of the node first, because nodes keep the widgets they were created with.
 
@@ -335,7 +335,7 @@ Based on [comfyui_lora_tag_loader](https://github.com/badjeff/comfyui_lora_tag_l
 - Every LoRA tag is removed, also when its LoRA cannot be found or its strength is not a number.
 - A line that only contained tags disappears; runs of spaces left by an inline tag become one space. Other blank lines are kept.
 - Angle brackets that are not LoRA tags (`<...>`) are left alone.
-- If the text has no LoRA tags at all, model, clip and text are returned unchanged.
+- If the text has no LoRA tags at all, the input MODEL and CLIP are returned as they are. LoRAs this node applied on an earlier run are unloaded, so removing every tag really removes their effect.
 
 ### Console output
 
@@ -349,13 +349,13 @@ This also shows which file a prefix matched. The path is absolute, so symlinked 
 
 ### Repeated runs
 
-ComfyUI runs this node again whenever the prompt text changes, even when the `<lora:...>` tags are identical. That happens on every queue with `{a|b}` selectors or `%placeholders%` in the text. To avoid loading the same files and patching the model again, the node remembers the last fifteen results and reuses an already patched MODEL and CLIP when all of these are the same:
+ComfyUI runs this node again whenever the prompt text changes, even when the `<lora:...>` tags are identical. That happens on every queue with `{a|b}` selectors or `%placeholders%` in the text. To avoid loading the same files and patching the model again, the node remembers the LoRA stack it applied on top of each MODEL and CLIP pair (the last fifteen pairs). A run compares the tags with that stack:
 
-- the incoming MODEL and CLIP (same checkpoint or upstream loader),
-- the resolved LoRA files, including their modification time and size,
-- the order of the tags and both strengths.
+- A LoRA that is still in the text at the same position, with the same resolved file (including its modification time and size) and the same strengths, is **reused**; its file is not read again.
+- A LoRA that was added to the text is **loaded** and applied on top of the reused ones.
+- A LoRA that is no longer in the text, or whose position, file or strengths changed, is **unloaded**, and everything after it is applied again in the new order.
 
-Changing only ordinary prompt text therefore does no LoRA work. Changing a tag, a strength, a LoRA file or the checkpoint loads again. A reused run prints `[MultiTabText] Lora Text Loader: reusing ... already applied LoRA(s): ...` in the console instead of the `loaded ...` lines.
+Changing only ordinary prompt text therefore does no LoRA work. Adding a tag only loads that one LoRA; removing a tag unloads it. A run that reuses LoRAs prints `[MultiTabText] Lora Text Loader: reusing ... already applied LoRA(s): ...` and a run that drops them prints `... unloaded ... no longer in the text: ...` in the console. Only the last fifteen MODEL / CLIP pairs are remembered, so alternating between more than fifteen checkpoints reloads their LoRAs.
 
 ### Missing or invalid tags
 
@@ -720,12 +720,12 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. In **specific line** mode, a blank line is a valid empty text; otherwise check that the line number is not out of range (the message says how many lines the file has) or switch on **wrap**. **Random line** mode can also pick a blank line, and an empty file has no line to read. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
 | ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-29.11) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-29.11)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-31.1) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-31.1)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
 | MultiTabModels CLIP skip does nothing | Tick **use** under **Load Checkpoint** and choose a layer below `-1`. `-1` is the last layer and therefore changes nothing; `-2` skips one layer. It applies to the tab's final CLIP, including a separate **Load CLIP**. When LoRA Manager's **Send params to workflow** carries Clip Skip, it enables the setting for the active tab automatically. |
 | CLIP skip from "Send params to workflow" is not applied | Current public LoRA Manager displays Clip Skip but does not include it in the send request. Apply `patches/lora-manager-send-clip-skip.patch` in the LoRA Manager folder, restart ComfyUI, and hard-refresh the LoRA Manager tab. In the browser console (F12, *Verbose*) the send should then show `[MultiTabText] LoRA Manager sent clip_skip = ...`. Without the patch, use the node's own CLIP skip control. The value must be a number: `0` disables CLIP skip, `1` means the last layer, and `2` skips one layer. |
 | `%model%` stays as it is, or `%model_type%` is `unknown` | Check the console: the node prints a warning once when no checkpoint / diffusion model was found or when a placeholder name is unknown. The model must be reachable from the sampler that uses the text, otherwise the nearest loader is used. If a new model was renamed to a generic file, keep its family name in the folder (for example `Anima/model.safetensors`), or connect its separate CLIP and VAE loaders so the loader hints can identify it. With LoRA Manager installed, `%model_base%` / `%model_title%` need its checkpoint cache to be filled. |
 | Lora Text Loader removes the tag but does not change the model | The console names the reason: the LoRA is not in `models/loras`, its name is empty, or a strength is not a number. Matching ignores case and accepts the file name, its stem, a path or the beginning of a name. The last part is the clip strength only when four values are written: `<lora:name:model:clip>`. |
-| Lora Text Loader prints `loaded ...` on every queue | That is expected only when something really changed: the tag order, a strength, the checkpoint, or the LoRA file (its modification time or size). With only ordinary prompt text changing (random selectors, model placeholders), the node reuses the already patched model and prints `reusing ... already applied LoRA(s): ...` instead. Only the last fifteen combinations are remembered, so alternating between more than fifteen LoRA stacks reloads them. |
+| Lora Text Loader prints `loaded ...` on every queue | That is expected only when something really changed: a new tag, the tag order, a strength, the checkpoint, or the LoRA file (its modification time or size). With only ordinary prompt text changing (random selectors, model placeholders), the node reuses the already patched model and prints `reusing ... already applied LoRA(s): ...` instead. Removing a tag prints `unloaded ... no longer in the text: ...`, and the LoRAs after it are applied again. Only the last fifteen MODEL / CLIP pairs are remembered, so alternating between more than fifteen checkpoints reloads their LoRAs. |
 | Nodes appear twice | An old copy of the package is still in `custom_nodes`. Remove it. |
 | Text lost after refresh | Make sure you are on the latest version, then hard-refresh. Use **Export all** for backups. |
 
@@ -741,7 +741,7 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 
 **MultiTabModels:** a Duplicate tab button; tabs with a LoRA text field (output `LORA`, comments supported), optional per-tab CLIP skip (CLIP Set Last Layer), LoRA Manager support (send checkpoint, diffusion model, params or LoRA into the active tab, with checkpoint / diffusion model detection), models kept between runs, and Load Checkpoint / Load Diffusion Model / Load CLIP / Load VAE choices that mirror ComfyUI's loaders (a checkpoint's MODEL, CLIP and VAE can be replaced per output) and KSampler settings (`steps`, `cfg`, `sampler_name`, `scheduler`) with live sampler and scheduler lists; filterable drop-downs; outputs of the active tab; add, remove, rename, reorder; import and export of tabs; refreshable lists.
 
-**Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), reuses the already applied LoRAs when only the rest of the prompt changed (same model, files and strengths), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
+**Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), keeps the LoRAs that are already applied and only loads the ones that were added (removing a tag unloads that LoRA), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
 
 **Resolution Selector (MultiTabText):** outputs `width` and `height` as integers from a common aspect ratio and a megapixel target (the same math as ComfyUI's built-in Resolution Selector, both sides multiples of a chosen value), from a model-recommended preset for SD 1.5, SDXL, Pony, Illustrious, Krea 2, MOSS Image or Anima, or from a width and height typed by hand, with a toggle to round the manual values to the multiple or leave them unchanged, a **flip** option that swaps width and height in every mode, hover tooltips on all inputs and outputs, and regular number fields for the numeric settings. It expands ComfyUI's built-in Resolution Selector without replacing it.
 

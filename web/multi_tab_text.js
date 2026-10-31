@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-console.log("[MultiTabText] frontend extension loaded (build 2026-10-29.11)");
+console.log("[MultiTabText] frontend extension loaded (build 2026-10-31.1)");
 
 const NODE_NAME = "RandomTextTabs";
 const DATA_WIDGET = "tabs_data";

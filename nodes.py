@@ -46,7 +46,7 @@ try:  # imported as part of the package (ComfyUI)
 except ImportError:  # loaded as a plain module (tests, tools)
     from prompt_vars import apply_conditionals, build_context, substitute_variables, uses_prompt_data
 
-BUILD = "2026-10-29.11"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
+BUILD = "2026-10-31.1"  # shown in the startup / debug messages so mixed or duplicate installs are easy to spot
 
 # Set the environment variable MULTITABTEXT_DEBUG=1 before starting ComfyUI to log what each run receives.
 _DEBUG = os.environ.get("MULTITABTEXT_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
@@ -694,10 +694,11 @@ def _find_lora_file(name, files):
 # ComfyUI re-runs this node whenever its `text` input (or any node it comes from) changes, even when
 # the <lora:...> tags are exactly the same. That happens on every queue with {a|b} selectors or model
 # placeholders, and applying a LoRA again is expensive (file read, key mapping, a new patched model).
-# Remember the last few results, so a run with the same base MODEL/CLIP, the same resolved files
-# (path, modification time and size) and the same strengths reuses them instead of loading again.
+# Keep the stack of LoRAs that was applied on top of each base MODEL/CLIP pair, per node. A run keeps
+# the LoRAs the text still asks for (same position, file and strengths), only loads the ones that
+# were added, and drops the ones that are gone so they no longer affect the returned model.
 # `id()` is safe as part of the key because the entry keeps the base objects alive.
-_LORA_CACHE = OrderedDict()  # (id(model), id(clip), tags) -> (model, clip, patched model, patched clip)
+_LORA_CACHE = OrderedDict()  # (unique_id, id(model), id(clip)) -> _LoraStack
 _LORA_CACHE_LIMIT = 15
 
 
@@ -710,6 +711,41 @@ def _lora_stamp(path):
         return None
 
 
+class _LoraStack:
+    """The LoRAs applied on top of one base MODEL/CLIP pair, in the order they were applied."""
+
+    __slots__ = ("base_model", "base_clip", "steps")
+
+    def __init__(self, model, clip):
+        self.base_model = model
+        self.base_clip = clip
+        self.steps = []  # [{"key", "raw", "model", "clip"}], one per applied LoRA
+
+    def state(self):
+        """(model, clip) after the last applied LoRA, or the base pair when nothing is applied."""
+        if self.steps:
+            last = self.steps[-1]
+            return last["model"], last["clip"]
+        return self.base_model, self.base_clip
+
+
+def _cached_lora_stack(unique_id, model, clip, create=False):
+    """The stack cached for this node and MODEL/CLIP pair; created (and trimmed) when `create` is set."""
+    cache_key = (unique_id, id(model), id(clip))
+    stack = _LORA_CACHE.get(cache_key)
+    if stack is not None and (stack.base_model is not model or stack.base_clip is not clip):
+        stack = None  # id() was reused by an unrelated object
+    if stack is None:
+        if not create:
+            return None
+        stack = _LoraStack(model, clip)
+        _LORA_CACHE[cache_key] = stack
+        while len(_LORA_CACHE) > _LORA_CACHE_LIMIT:
+            _LORA_CACHE.popitem(last=False)
+    _LORA_CACHE.move_to_end(cache_key)
+    return stack
+
+
 class LoraTextLoader:
     """
     Loads the LoRAs written in `text` and outputs the prompt without the tags.
@@ -719,8 +755,9 @@ class LoraTextLoader:
     a tag with two weights sets model and clip strength separately. Missing or invalid LoRAs
     are reported in the console and their tag is still removed from the prompt.
 
-    When a run only changes the rest of the prompt (same MODEL, CLIP, LoRA files and strengths),
-    the previously patched model and clip are reused instead of loading the LoRAs again.
+    LoRAs that are already applied are reused when the text still contains them at the same
+    position with the same strengths; a run only loads the LoRAs that were added. LoRAs that are
+    no longer in the text are unloaded, so removing a tag removes its effect from the model.
 
     Based on comfyui_lora_tag_loader (badjeff), with separate clip strength and without
     touching angle brackets that are not LoRA tags.
@@ -733,7 +770,10 @@ class LoraTextLoader:
                 "model": ("MODEL",),
                 "clip": ("CLIP",),
                 "text": ("STRING", {"multiline": True, "default": ""}),
-            }
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
     RETURN_TYPES = ("MODEL", "CLIP", "STRING")
@@ -741,9 +781,18 @@ class LoraTextLoader:
     FUNCTION = "load"
     CATEGORY = "MultiTabText"
 
-    def load(self, model, clip, text):
+    def load(self, model, clip, text, unique_id=None):
         prompt, tags = parse_lora_tags(text)
+
+        # No tags: pass the model through as it came in and forget the LoRAs this node applied to
+        # it earlier, so a removed tag really removes its effect (and frees the loaded weights).
         if not tags:
+            stack = _cached_lora_stack(unique_id, model, clip)
+            if stack is not None and stack.steps:
+                print("[MultiTabText] Lora Text Loader: unloaded {} LoRA(s) because the text has no "
+                      "LoRA tags: {}.".format(
+                          len(stack.steps), ", ".join(step["raw"] for step in stack.steps)), flush=True)
+                stack.steps.clear()
             return (model, clip, prompt)
 
         try:
@@ -784,41 +833,50 @@ class LoraTextLoader:
                 continue
             jobs.append((tag, lora_name, lora_path))
 
-        if not jobs:
+        stack = _cached_lora_stack(unique_id, model, clip, create=bool(jobs))
+        if stack is None:  # nothing to apply and nothing cached for this model / clip
             return (model, clip, prompt)
 
-        cache_key = (id(model), id(clip), tuple(
+        # A step is identified by the resolved file (path, modification time and size) and both
+        # strengths, so a replaced file or a changed weight is loaded again.
+        keys = [
             (lora_path, _lora_stamp(lora_path), tag["model_strength"], tag["clip_strength"])
             for tag, _name, lora_path in jobs
-        ))
-        cached = _LORA_CACHE.get(cache_key)
-        if cached is not None and cached[0] is model and cached[1] is clip:
-            _LORA_CACHE.move_to_end(cache_key)
-            print("[MultiTabText] Lora Text Loader: reusing {} already applied LoRA(s): {} "
-                  "(only the rest of the prompt changed).".format(
-                      len(jobs), ", ".join(tag["raw"] for tag, _name, _path in jobs)), flush=True)
-            return (cached[2], cached[3], prompt)
+        ]
 
-        base_model, base_clip = model, clip
-        failed = False
-        for tag, lora_name, lora_path in jobs:
+        # Keep the LoRAs the text still asks for, as long as they are in the same order. The first
+        # difference unloads that LoRA and everything after it, and those are applied again.
+        reused = 0
+        while (reused < len(stack.steps) and reused < len(jobs)
+               and stack.steps[reused]["key"] == keys[reused]):
+            reused += 1
+
+        dropped = stack.steps[reused:]
+        if dropped:
+            del stack.steps[reused:]
+            print("[MultiTabText] Lora Text Loader: unloaded {} LoRA(s) no longer in the text: {}.".format(
+                len(dropped), ", ".join(step["raw"] for step in dropped)), flush=True)
+        if reused:
+            print("[MultiTabText] Lora Text Loader: reusing {} already applied LoRA(s): {}.".format(
+                reused, ", ".join(tag["raw"] for tag, _name, _path in jobs[:reused])), flush=True)
+
+        model, clip = stack.state()
+        for (tag, lora_name, lora_path), key in zip(jobs[reused:], keys[reused:]):
             try:
                 lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-                model, clip = comfy.sd.load_lora_for_models(
+                new_model, new_clip = comfy.sd.load_lora_for_models(
                     model, clip, lora, tag["model_strength"], tag["clip_strength"])
             except Exception as exc:
-                failed = True
+                # Not cached, so the next run tries again (and re-applies what follows it).
                 print("[MultiTabText] WARNING: Lora Text Loader could not load {!r}: {}.".format(lora_name, exc),
                       flush=True)
                 continue
+            model, clip = new_model, new_clip
+            stack.steps.append({"key": key, "raw": tag["raw"], "model": model, "clip": clip})
             print("[MultiTabText] Lora Text Loader: loaded {} as {!r} (model={}, clip={}) from {}".format(
                 tag["raw"], lora_name, tag["model_strength"], tag["clip_strength"],
                 os.path.abspath(lora_path)), flush=True)
 
-        if not failed:  # never reuse a partially applied stack
-            _LORA_CACHE[cache_key] = (base_model, base_clip, model, clip)
-            while len(_LORA_CACHE) > _LORA_CACHE_LIMIT:
-                _LORA_CACHE.popitem(last=False)
         return (model, clip, prompt)
 
 
