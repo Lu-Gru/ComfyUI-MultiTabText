@@ -1,7 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { installCommentToggle, installCommentToggleOnWidget } from "./comment_toggle.js";
 
-console.log("[MultiTabText] frontend extension loaded (build 2026-10-31.1)");
+console.log("[MultiTabText] frontend extension loaded (build 2026-11-02.1)");
 
 const NODE_NAME = "RandomTextTabs";
 const DATA_WIDGET = "tabs_data";
@@ -322,7 +323,7 @@ function createEditor(node, dataWidget) {
   const ta = el("textarea", "rtt-text");
   ta.wrap = "off";
   ta.spellcheck = false; // the saved toolbar option is applied by applyView()
-  ta.placeholder = "Type text here.\n# or // = comment line\n/* block comment */\n{red|green|} flower"
+  ta.placeholder = "Type text here.\n# or // = comment line (Ctrl+/ toggles)\n/* block comment */\n{red|green|} flower"
     + "\n%model% = model name; %model_type% outputs the model type (sdxl, pony, flux, anima, moss, ...)"
     + "\n%text% = first connected text, %text_2% = second; [%text%]x[%text_2%] -> 1280x720"
     + "\n<lora:detail:0.8> = LoRA; <lora:style:0.6:0.4> = model:clip strength (Lora Text Loader)"
@@ -831,6 +832,7 @@ function createEditor(node, dataWidget) {
   applyView();
 
   // ---------- textarea events ----------
+  installCommentToggle(ta); // Ctrl+/ comments the selected lines (or the caret line)
   ta.addEventListener("input", () => {
     state.tabs[state.active].text = ta.value;
     renderRows();
@@ -979,6 +981,17 @@ function setupDynamicTextInputs(nodeType) {
   nodeType.prototype.onConfigure = function () {
     const r = onConfigure?.apply(this, arguments);
     scheduleSync(this);
+    return r;
+  };
+}
+
+// Ctrl+/ in ComfyUI's own multiline text widgets of this package (tags of Remove Tags, prompt of
+// Lora Text Loader). The custom editors install it themselves.
+function setupCommentToggle(nodeType, widgetNames) {
+  const onNodeCreated = nodeType.prototype.onNodeCreated;
+  nodeType.prototype.onNodeCreated = function () {
+    const r = onNodeCreated?.apply(this, arguments);
+    for (const name of widgetNames) installCommentToggleOnWidget(this.widgets?.find((w) => w?.name === name));
     return r;
   };
 }
@@ -1457,6 +1470,11 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name === "RemoveTags") {
       setupDynamicTextInputs(nodeType);
+      setupCommentToggle(nodeType, ["tags"]);
+      return;
+    }
+    if (nodeData.name === "LoraTextLoader") {
+      setupCommentToggle(nodeType, ["text"]);
       return;
     }
     if (nodeData.name !== NODE_NAME) return;

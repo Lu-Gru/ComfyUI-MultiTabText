@@ -1,7 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { installCommentToggle } from "./comment_toggle.js";
 
-console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-10-31.1)");
+console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-11-02.1)");
 
 // MultiTabModels: tabs, each with a choice for ComfyUI's "Load Checkpoint", "Load Diffusion Model", "Load CLIP" and
 // "Load VAE", an optional CLIP skip (CLIP Set Last Layer), the sampler settings (steps, cfg, sampler_name, scheduler)
@@ -953,7 +954,8 @@ function createEditor(node, selectionWidget) {
     loraBox.append(el("div", "mtm-gtitle", "LoRA text  (output LORA)"));
     const loraText = el("textarea", "mtm-lora");
     loraText.spellcheck = false;
-    loraText.placeholder = "<lora:name:0.8>  - typed here or sent from LoRA Manager\n# comment    // comment    /* comment */";
+    installCommentToggle(loraText); // Ctrl+/ comments the selected lines (or the caret line)
+    loraText.placeholder = "<lora:name:0.8>  - typed here or sent from LoRA Manager\n# comment    // comment    /* comment */    Ctrl+/ toggles";
     loraText.value = tab.lora ?? "";
     if (state.loraHeight) loraText.style.height = `${state.loraHeight}px`;
     const preview = el("div", "mtm-hint mtm-preview");

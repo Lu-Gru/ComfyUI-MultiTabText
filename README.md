@@ -40,13 +40,15 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    ├── files.py
    └── web/
        ├── multi_tab_text.js
-       └── multi_tab_models.js
+       ├── multi_tab_models.js
+       └── comment_toggle.js
    ```
 
    The `web/` folder is required. It contains the editor. Without it you only get a plain one-line text field.
+   `comment_toggle.js` in the same folder provides the `Ctrl+/` comment shortcut used by both editors.
    `prompt_vars.py` is required too: it holds the model detection and `@if` / `%placeholder%` support.
 3. Start ComfyUI. The terminal should print:
-   `[MultiTabText] Python side loaded (build 2026-10-31.1) from ...`
+   `[MultiTabText] Python side loaded (build 2026-11-02.1) from ...`
 4. Hard-refresh the browser (**Ctrl+F5**).
 5. Add the node. Delete any older copy of the node first, because nodes keep the widgets they were created with.
 
@@ -77,6 +79,7 @@ No extra Python packages are needed.
 - **Import all** loads such a file. With **Append on import** unticked (the default) it **replaces** all current tabs and the toolbar options (after a confirmation). With it ticked, the imported tabs are **added after** the current ones, the first imported tab becomes the active tab, and your current toolbar options stay as they are. The checkbox itself is not taken from the file.
 - **Wrap text** wraps long lines instead of scrolling sideways (off by default).
 - **Grey comments** shows comments in grey (on by default).
+- `Ctrl+/` (`Cmd+/` on macOS) toggles comments in the editor: selected text is wrapped in `/* ... */`, while without a selection the whole line under the caret is switched on and off with `//`. Indentation is kept, and the shortcut also works in the `tags` box of Remove Tags, the prompt field of Lora Text Loader and the LoRA text field of MultiTabModels.
 - **Remove empty lines** (checkbox in the same toolbar) removes empty or whitespace-only lines from the output. It is **off by default**: with it unticked, blank lines in your tabs are kept exactly as typed. Like the other options it is saved in the editor's own data, so it is included in Export all / Import all.
 - The empty editor shows short examples of comments, selectors, model placeholders, text references and LoRA tags. The placeholder is only a hint and is never part of the output.
 - The node keeps a minimum height (about 340 px) so the tabs, toolbar and text area always fit. On a narrow node the toolbar can wrap onto more rows; the text area then shrinks instead of spilling outside the node. Workflows saved with an older, smaller node are grown to the minimum when loaded.
@@ -108,6 +111,7 @@ a cat /* inline comment */ sitting on a sofa
 
 - `#` and `//` only count at the start of a line, so `http://example.com` is safe.
 - `/* ... */` works inline and across lines. A line containing only comment text is removed. An unterminated `/*` comments out everything after it.
+- `Ctrl+/` (`Cmd+/` on macOS) toggles comments without typing the markers: selected text is wrapped in `/* ... */` (also across lines), while without a selection the line under the caret is switched on and off with `//` after its indentation. Selecting text that is already between `/*` and `*/` removes the markers again. When removing line comments, both `//` and `#` are accepted.
 
 ### Random selectors
 
@@ -654,6 +658,7 @@ The field can be made taller or shorter by dragging its bottom-right corner. **T
 ```
 
 - `#` and `//` only count at the start of a line, `/* ... */` works inline and over several lines. An unclosed `/*` comments out the rest of the text.
+- `Ctrl+/` (`Cmd+/` on macOS) toggles comments in the field: selected text is wrapped in `/* ... */`, while without a selection the line under the caret is switched on and off with `//`. It works like in the MultiTabText editor and keeps the indentation.
 - When a comment changes the output, a small **Output without comments** preview appears under the field, so you can see exactly what is sent on.
 - Text sent from LoRA Manager respects comments: a LoRA that only appears inside a comment does not count as "already there" (the new tag is added as an active one), and nothing is ever added *into* a comment.
 
@@ -720,7 +725,7 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. In **specific line** mode, a blank line is a valid empty text; otherwise check that the line number is not out of range (the message says how many lines the file has) or switch on **wrap**. **Random line** mode can also pick a blank line, and an empty file has no line to read. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
 | ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-10-31.1) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-10-31.1)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-11-02.1) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-11-02.1)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
 | MultiTabModels CLIP skip does nothing | Tick **use** under **Load Checkpoint** and choose a layer below `-1`. `-1` is the last layer and therefore changes nothing; `-2` skips one layer. It applies to the tab's final CLIP, including a separate **Load CLIP**. When LoRA Manager's **Send params to workflow** carries Clip Skip, it enables the setting for the active tab automatically. |
 | CLIP skip from "Send params to workflow" is not applied | Current public LoRA Manager displays Clip Skip but does not include it in the send request. Apply `patches/lora-manager-send-clip-skip.patch` in the LoRA Manager folder, restart ComfyUI, and hard-refresh the LoRA Manager tab. In the browser console (F12, *Verbose*) the send should then show `[MultiTabText] LoRA Manager sent clip_skip = ...`. Without the patch, use the node's own CLIP skip control. The value must be a number: `0` disables CLIP skip, `1` means the last layer, and `2` skips one layer. |
 | `%model%` stays as it is, or `%model_type%` is `unknown` | Check the console: the node prints a warning once when no checkpoint / diffusion model was found or when a placeholder name is unknown. The model must be reachable from the sampler that uses the text, otherwise the nearest loader is used. If a new model was renamed to a generic file, keep its family name in the folder (for example `Anima/model.safetensors`), or connect its separate CLIP and VAE loaders so the loader hints can identify it. With LoRA Manager installed, `%model_base%` / `%model_title%` need its checkpoint cache to be filled. |

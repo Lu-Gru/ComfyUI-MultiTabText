@@ -13,8 +13,11 @@ WEB_DIRECTORY = "./web"
 _here = os.path.dirname(os.path.abspath(__file__))
 _js = os.path.join(_here, "web", "multi_tab_text.js")
 _js_models = os.path.join(_here, "web", "multi_tab_models.js")
+_js_comment = os.path.join(_here, "web", "comment_toggle.js")
 if os.path.isfile(_js) and not os.path.isfile(_js_models):
     print("[MultiTabText] WARNING: web/multi_tab_models.js is MISSING. The MultiTabModels editor will not appear.")
+if (os.path.isfile(_js) or os.path.isfile(_js_models)) and not os.path.isfile(_js_comment):
+    print("[MultiTabText] WARNING: web/comment_toggle.js is MISSING. The editors will not load (Ctrl+/ comment toggle).")
 if os.path.isfile(_js):
     print("[MultiTabText] Python side loaded (build " + BUILD + ") from " + _here)
 else:
