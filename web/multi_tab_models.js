@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCommentToggle } from "./comment_toggle.js";
 
-console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-11-02.1)");
+console.log("[MultiTabText] MultiTabModels extension loaded (build 2026-11-03.1)");
 
 // MultiTabModels: tabs, each with a choice for ComfyUI's "Load Checkpoint", "Load Diffusion Model", "Load CLIP" and
 // "Load VAE", an optional CLIP skip (CLIP Set Last Layer), the sampler settings (steps, cfg, sampler_name, scheduler)

@@ -1,12 +1,13 @@
 # MultiTabText
 
-Eight nodes for ComfyUI:
+Nine nodes for ComfyUI:
 
 | Node | Purpose |
 |------|---------|
 | **MultiTabText** | A tabbed text editor with any number of optional text inputs (referenced inside the text as `%text%`, `%text_2%`, ...). Supports comments, random `{a\|b\|c}` selectors and line numbers. Outputs the text of all checked tabs (or the active tab if none is checked). |
 | **MultiTabText Remove Tags** | Takes one or more text inputs, joins them, then removes or replaces tags. Replacements can be random. |
 | **Resolution Selector (MultiTabText)** | Outputs `width` and `height` from an aspect ratio and megapixel target, a model-recommended preset, or a manual size, with optional rounding to a multiple and a flip option. |
+| **Image Add Text (MultiTabText)** | Draws text onto an image: font, size, colour (with alpha), outline, position, text box size and alignment. Outputs the image (RGBA or RGB), the text and the alpha channel as a mask. |
 | **Lora Text Loader** | Loads `<lora:name:model_strength:clip_strength>` tags from a prompt into MODEL and CLIP, and outputs the prompt without the tags. |
 | **TxtWriteFile** | Saves a text input to a file: overwrite it or append to it (optionally starting on a new line). Outputs the written text and the full path of the file. |
 | **ListFiles** | Lists the files of a folder (optionally only some suffixes) and outputs one of them (by index, with wrap-around) or all of them. |
@@ -38,6 +39,8 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    ├── prompt_vars.py
    ├── models.py
    ├── files.py
+   ├── image_text.py
+   ├── fonts/                 (optional: your own .ttf / .otf / .ttc fonts)
    └── web/
        ├── multi_tab_text.js
        ├── multi_tab_models.js
@@ -48,7 +51,7 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    `comment_toggle.js` in the same folder provides the `Ctrl+/` comment shortcut used by both editors.
    `prompt_vars.py` is required too: it holds the model detection and `@if` / `%placeholder%` support.
 3. Start ComfyUI. The terminal should print:
-   `[MultiTabText] Python side loaded (build 2026-11-02.1) from ...`
+   `[MultiTabText] Python side loaded (build 2026-11-03.1) from ...`
 4. Hard-refresh the browser (**Ctrl+F5**).
 5. Add the node. Delete any older copy of the node first, because nodes keep the widgets they were created with.
 
@@ -522,6 +525,70 @@ Switch **manual** on (the switch shows *manual size*), then type **width** and *
 
 ---
 
+## Image Add Text (MultiTabText)
+
+Draws text onto every image of an `IMAGE` batch. The text, font, colours and position are widgets on the node (there are no extra sockets). It outputs the image with the text, the text itself and the alpha channel.
+
+| Setting | Meaning |
+|---------|---------|
+| `image` | The image(s) to draw on. Every image of a batch gets the same text. |
+| `text` | The text to draw. It is a multi-line field: line breaks are kept. |
+| `font` | A font file. It lists ComfyUI's `fonts` folder, the `fonts` folder next to `image_text.py` and the system fonts (on Windows, `C:\Windows\Fonts`). `Default (Pillow)` is the safe fallback. |
+| `font_size` | Size in pixels (1–2048). |
+| `font_color` | Colour of the letters. Pick a palette entry, or `Custom` and type the colour into `font_color_custom`. |
+| `x`, `y` | Top-left corner of the text box in pixels. Negative values move the text partly off the image. `0, 0` is the top-left corner of the image. |
+| `width` | Width of the text box. **0 = the width of the text.** With a fixed width, long lines are wrapped (when `wrap` is on). |
+| `height` | Height of the text box. **0 = the height of the text.** Text that does not fit into a fixed height is cut off at the bottom. |
+| `background_color` | Fill of the text box. `Transparent (#00000000)` (default) draws no fill, so the image stays visible. |
+| `outline_color` | Colour of the outline around the letters. |
+| `outline_width` | Outline thickness in pixels. `0` = no outline. |
+| `align` | `left`, `center` or `right`: where the lines sit inside the text box. |
+| `valign` | `top`, `middle` or `bottom`: where the whole text block sits inside the text box. With `height = 0` the box hugs the text, so all three look the same. |
+| `wrap` | On (default): wrap long lines to `width`. Off: draw each line in full, even past the box. |
+| `output_alpha` | On (default): the `image` output has 4 channels (RGBA). Off: 3 channels (RGB). The `alpha` output is always there. |
+
+**Outputs**
+
+| Output | Content |
+|--------|---------|
+| `image` | The image(s) with the text drawn on them. RGBA or RGB, depending on `output_alpha`. |
+| `text` | The text that was drawn (unchanged), so it can be passed on. |
+| `alpha` | The alpha channel of the result as a `MASK` (1 = opaque, 0 = transparent), for example for **ImageCompositeMasked**. |
+
+### Colours and alpha
+
+Every colour accepts an alpha value, so text, its outline and the background can be semi-transparent:
+
+- **Palette:** common colours plus `Transparent` and 25 / 50 / 75 % variants of white and black. Pick one from the drop-down.
+- **Custom:** choose `Custom (type a colour below)` and type `#RGB`, `#RRGGBB`, `#RRGGBBAA`, a CSS name (`white`, `gold`, ...) or `rgb(255, 0, 0)` / `rgba(255, 0, 0, 0.5)` into the matching `*_custom` field. The last two digits of an 8-digit hex are alpha (`80` = 50 %).
+- **Examples:** a black background at 50 % = `#00000080`; hidden background = `Transparent (#00000000)`; soft text = `#FFFFFFB3`.
+
+The colours are composited over the input image. If the input already has an alpha channel, its transparency is kept. If the input is RGB, the result is opaque unless `output_alpha` turns the extra channel off — the `alpha` mask then reflects that (fully opaque).
+
+### Fonts
+
+The font drop-down is built when the node is created. It contains, in this order:
+
+1. fonts registered by ComfyUI (its `fonts` folder, including custom node font folders),
+2. font files in `fonts/` next to `image_text.py`,
+3. the system fonts.
+
+Put a `.ttf`, `.otf`, `.ttc` or `.otc` file into either `fonts` folder and restart ComfyUI to see it in the list. Font names are shown as file names (for example `arial.ttf` or `DejaVuSans-Bold.ttf`). If the selected font cannot be loaded, the node prints a warning and uses Pillow's built-in font, so the run does not fail.
+
+### Layout details
+
+- The text box starts at `x, y`. With `width = 0` the box hugs the text; with `height = 0` the box ends below the last line.
+- A fixed `width` is also the wrapping width. A word that is wider than the box is split between characters.
+- A fixed `height` is a hard limit: lines below it are cut off (the background is not resized).
+- `align` positions both the block of text inside the box and the individual lines inside the block, so centered text stays centered when lines have different lengths.
+- `valign` moves the text block to the top, the middle or the bottom of a box with a fixed `height`. Text that does not fit is clipped to the box, also when it is centered or bottom-aligned.
+- The outline is counted in the text size, so `width = 0` / `height = 0` also fit the outline.
+- An empty `text` still draws the background box when `width` and `height` are set; otherwise the image is returned unchanged.
+
+Example: `x = 40`, `y = 300`, `width = 560`, `height = 140`, align `center`, valign `middle`, white text, black outline width 3, background `Black 50% (#00000080)` puts a readable caption box near the bottom of a 640 × 480 image.
+
+---
+
 ## TxtReadFile
 
 Reads a text file and outputs all of it, one chosen line, or a random line. The node has **no sockets**: type (or paste) the path of the file into its `path` field and choose what to read.
@@ -725,10 +792,13 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. In **specific line** mode, a blank line is a valid empty text; otherwise check that the line number is not out of range (the message says how many lines the file has) or switch on **wrap**. **Random line** mode can also pick a blank line, and an empty file has no line to read. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
 | ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-11-02.1) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-11-02.1)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-11-03.1) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-11-03.1)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
 | MultiTabModels CLIP skip does nothing | Tick **use** under **Load Checkpoint** and choose a layer below `-1`. `-1` is the last layer and therefore changes nothing; `-2` skips one layer. It applies to the tab's final CLIP, including a separate **Load CLIP**. When LoRA Manager's **Send params to workflow** carries Clip Skip, it enables the setting for the active tab automatically. |
 | CLIP skip from "Send params to workflow" is not applied | Current public LoRA Manager displays Clip Skip but does not include it in the send request. Apply `patches/lora-manager-send-clip-skip.patch` in the LoRA Manager folder, restart ComfyUI, and hard-refresh the LoRA Manager tab. In the browser console (F12, *Verbose*) the send should then show `[MultiTabText] LoRA Manager sent clip_skip = ...`. Without the patch, use the node's own CLIP skip control. The value must be a number: `0` disables CLIP skip, `1` means the last layer, and `2` skips one layer. |
 | `%model%` stays as it is, or `%model_type%` is `unknown` | Check the console: the node prints a warning once when no checkpoint / diffusion model was found or when a placeholder name is unknown. The model must be reachable from the sampler that uses the text, otherwise the nearest loader is used. If a new model was renamed to a generic file, keep its family name in the folder (for example `Anima/model.safetensors`), or connect its separate CLIP and VAE loaders so the loader hints can identify it. With LoRA Manager installed, `%model_base%` / `%model_title%` need its checkpoint cache to be filled. |
+| Image Add Text: a font is missing from the drop-down | Put the `.ttf` / `.otf` / `.ttc` / `.otc` file into the `fonts/` folder next to `image_text.py` or into ComfyUI's fonts folder, then restart ComfyUI. The list is built when the node is created. |
+| Image Add Text: the text looks tiny and blocky | The selected font could not be loaded and Pillow's built-in font was used. The console prints `[Image Add Text] could not load font ...`; pick another font. |
+| Image Add Text: a later node does not accept the image | The `image` output is RGBA by default. Switch **output_alpha** to *RGB output*, or insert a node that handles 4 channels. The `alpha` MASK output is independent of that switch. |
 | Lora Text Loader removes the tag but does not change the model | The console names the reason: the LoRA is not in `models/loras`, its name is empty, or a strength is not a number. Matching ignores case and accepts the file name, its stem, a path or the beginning of a name. The last part is the clip strength only when four values are written: `<lora:name:model:clip>`. |
 | Lora Text Loader prints `loaded ...` on every queue | That is expected only when something really changed: a new tag, the tag order, a strength, the checkpoint, or the LoRA file (its modification time or size). With only ordinary prompt text changing (random selectors, model placeholders), the node reuses the already patched model and prints `reusing ... already applied LoRA(s): ...` instead. Removing a tag prints `unloaded ... no longer in the text: ...`, and the LoRAs after it are applied again. Only the last fifteen MODEL / CLIP pairs are remembered, so alternating between more than fifteen checkpoints reloads their LoRAs. |
 | Nodes appear twice | An old copy of the package is still in `custom_nodes`. Remove it. |
@@ -736,7 +806,7 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 
 ## Notes
 
-- Saved workflows keep working across updates because the internal node IDs are unchanged: `RandomTextTabs`, `RemoveTags`, `LoraTextLoader`, `MultiTabTextResolutionSelector`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. Their display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader`, `Resolution Selector (MultiTabText)`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. The built-in ComfyUI `ResolutionSelector` is left untouched.
+- Saved workflows keep working across updates because the internal node IDs are unchanged: `RandomTextTabs`, `RemoveTags`, `LoraTextLoader`, `MultiTabTextResolutionSelector`, `MultiTabTextImageAddText`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. Their display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader`, `Resolution Selector (MultiTabText)`, `Image Add Text (MultiTabText)`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. The built-in ComfyUI `ResolutionSelector` is left untouched.
 - The editor is a custom web widget. Its tab data is stored in a hidden field called `tabs_data` and travels with the workflow.
 - Model placeholders and `@if` blocks need no sockets and no extra packages. They use ComfyUI's hidden `PROMPT` input, which every node receives anyway, so existing workflows and node layouts stay unchanged.
 
@@ -749,6 +819,8 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 **Lora Text Loader:** takes MODEL, CLIP and a prompt, loads every `<lora:name:model_strength:clip_strength>` tag in the order written (separate model and clip strength, negative values allowed, case-insensitive names, exact / path / prefix matching), keeps the LoRAs that are already applied and only loads the ones that were added (removing a tag unloads that LoRA), and outputs the modified MODEL, CLIP and the prompt with all LoRA tags removed; missing or invalid tags are reported and skipped without stopping the run.
 
 **Resolution Selector (MultiTabText):** outputs `width` and `height` as integers from a common aspect ratio and a megapixel target (the same math as ComfyUI's built-in Resolution Selector, both sides multiples of a chosen value), from a model-recommended preset for SD 1.5, SDXL, Pony, Illustrious, Krea 2, MOSS Image or Anima, or from a width and height typed by hand, with a toggle to round the manual values to the multiple or leave them unchanged, a **flip** option that swaps width and height in every mode, hover tooltips on all inputs and outputs, and regular number fields for the numeric settings. It expands ComfyUI's built-in Resolution Selector without replacing it.
+
+**Image Add Text (MultiTabText):** draws multi-line text onto every image of a batch with a font picked from ComfyUI's fonts, a `fonts` folder next to the node or the system fonts; font size, palette colours with alpha (or custom hex / CSS / `rgba(...)`), outline colour and width, position, a text box (0 = automatic size) with wrapping, left / center / right alignment and top / middle / bottom vertical alignment, an optional background fill (transparent by default) and clipping to a fixed height; outputs the image as RGBA or RGB, the drawn text and the alpha channel as a MASK.
 
 **ListFiles:** lists a folder's files (natural order, optional suffix filter, no sub folders / hidden files), outputs one by `index` (wrap-around option, *control after generate* for stepping through the folder) or all as a list, plus a joined text, the match count and an `errors` text.
 
