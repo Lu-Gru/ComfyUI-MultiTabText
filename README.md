@@ -1,6 +1,6 @@
 # MultiTabText
 
-Nine nodes for ComfyUI:
+Ten nodes for ComfyUI:
 
 | Node | Purpose |
 |------|---------|
@@ -8,6 +8,7 @@ Nine nodes for ComfyUI:
 | **MultiTabText Remove Tags** | Takes one or more text inputs, joins them, then removes or replaces tags. Replacements can be random. |
 | **Resolution Selector (MultiTabText)** | Outputs `width` and `height` from an aspect ratio and megapixel target, a model-recommended preset, or a manual size, with optional rounding to a multiple and a flip option. |
 | **Image Add Text (MultiTabText)** | Draws text onto an image: font, size, colour (with alpha), outline, position, text box size and alignment. Outputs the image (RGBA or RGB), the text and the alpha channel as a mask. |
+| **Media Frame (MultiTabText)** | Reads one frame from an image or video file, or from a folder of media files: type filter, optional subfolder scan, cached or fresh reads, a media index and a frame index (both with control after generate), wrap-around options, and a video-only percentage range that picks a random frame. Outputs the frame image, frame rate, frame count, the full path, the file name (with optional suffix) and an `errors` text. |
 | **Lora Text Loader** | Loads `<lora:name:model_strength:clip_strength>` tags from a prompt into MODEL and CLIP, and outputs the prompt without the tags. |
 | **TxtWriteFile** | Saves a text input to a file: overwrite it or append to it (optionally starting on a new line). Outputs the written text and the full path of the file. |
 | **ListFiles** | Lists the files of a folder (optionally only some suffixes) and outputs one of them (by index, with wrap-around) or all of them. |
@@ -40,6 +41,7 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    ├── models.py
    ├── files.py
    ├── image_text.py
+   ├── media_frame.py
    ├── fonts/                 (optional: your own .ttf / .otf / .ttc fonts)
    └── web/
        ├── multi_tab_text.js
@@ -51,11 +53,11 @@ All nodes are in the add-node menu under **MultiTabText** (double-click the canv
    `comment_toggle.js` in the same folder provides the `Ctrl+/` comment shortcut used by both editors.
    `prompt_vars.py` is required too: it holds the model detection and `@if` / `%placeholder%` support.
 3. Start ComfyUI. The terminal should print:
-   `[MultiTabText] Python side loaded (build 2026-11-03.1) from ...`
+   `[MultiTabText] Python side loaded (build 2026-11-06.6) from ...`
 4. Hard-refresh the browser (**Ctrl+F5**).
 5. Add the node. Delete any older copy of the node first, because nodes keep the widgets they were created with.
 
-No extra Python packages are needed.
+No extra Python packages are needed. The **Media Frame** node reads images with Pillow (shipped with ComfyUI) and videos with PyAV, which current ComfyUI already ships; OpenCV is only an optional fallback (see [Media Frame](#media-frame-multitabtext)).
 
 **Updating:** replace the folder, restart ComfyUI, hard-refresh the browser, and re-add nodes only if a new checkbox or socket is missing. Remove old folders such as `comfyui_random_text_tabs`, otherwise the nodes register twice.
 
@@ -589,6 +591,152 @@ Example: `x = 40`, `y = 300`, `width = 560`, `height = 140`, align `center`, val
 
 ---
 
+## Media Frame (MultiTabText)
+
+Reads one frame from an **image or a video** (or a folder of media files) and outputs it as an image, together with the file's frame rate, frame count, **full path** and a short **file name**. A still image is treated as one frame (frame `0`). The `path` can be a single file or a folder; a folder is scanned for the chosen file types, and `media_index` picks one of the matches. This makes it possible to walk through a whole folder of clips and images, or through the frames of one clip, one queue at a time. For videos, `start_percent` / `end_percent` can restrict the frame to a part of the clip and pick a random frame inside it. Problems are written to the `errors` output instead of stopping the run (turn `stop_on_error` on to make them fatal).
+
+Hover any input or output to see a tooltip describing what it does; the same explanation is in the tables below.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `path` | *(empty)* | The image or video file to read, or a folder that contains them. Absolute or relative; relative paths are looked up from ComfyUI's working directory first, then in its `input` folder. Quotes are ignored (paths copied with *Copy as path* work), and `~` and environment variables are expanded. The node checks that the path exists and is a file or folder before it reads anything. |
+| `include_suffix` | on | Only affects the `file_name` output. **On:** the name keeps its extension, for example `clip.mp4`. **Off:** the extension is removed, for example `clip`. `media_file` is always the full path, and this setting does not change which file is read. |
+| `stop_on_error` | off | **Off:** a problem is written to `errors`, `image` is a `1 × 1` black placeholder and the workflow keeps running. **On:** the first problem stops the run with the same message, and ComfyUI reports it as an error (the `errors` output is then not produced). |
+| `media_type` | `All supported media` | Which file types to look for: all media, all videos, all images, one specific image / video format, or `Other`. A folder is scanned for them; a file path is also checked against the filter, so an `.mp4` needs a filter that includes `.mp4` and a `.png` needs one that includes `.png`. |
+| `media_type_custom` | *(empty)* | Only used with `media_type` = `Other (type the extensions below)`. The extensions to look for, separated by commas, semicolons or new lines (`mp4, .mkv, png, .jpg`). Empty = every supported type. |
+| `recursive` | on | **On:** search the folder and all its subfolders. **Off:** search only the folder you typed. Hidden files and folders (names starting with a dot) are always skipped. |
+| `cache` | on | **On:** ComfyUI reuses the result while the settings stay the same, so the file is not read again, and the list of files found by a folder scan is remembered. **Off:** scan and decode again on every queue, for example when files are added, removed or replaced on disk while ComfyUI is running. A narrowed percentage range always re-runs the node so it can pick a new random frame (the folder scan stays cached). |
+| `media_index` | `0` | Which scanned file to use: `0` is the first, in natural order (`clip2` before `clip10`). Only matters when `path` is a folder with several matches. Has **control after generate** (fixed / increment / decrement / randomize). |
+| `media_wrap` | on | **On:** a `media_index` past the last file wraps around to the first, and a negative index counts from the end. **Off:** an out-of-range index stops the run with a message that shows how many files were found. |
+| `frame_index` | `0` | Which frame to return: `0` is the first frame. Has **control after generate** (fixed / increment / decrement / randomize), so *increment* steps through the video one frame per queue. Used for videos with the full percentage range; ignored for videos when `start_percent` / `end_percent` is narrowed. A still image has only frame `0`. |
+| `frame_wrap` | on | **On:** a `frame_index` past the last frame wraps around to the first, and a negative index counts from the end. **Off:** an out-of-range index stops the run and tells you how many frames the file has. A still image has one frame, frame `0`. |
+| `start_percent` | `0` | **Videos only.** Start of the frame range as a percentage of the video; `0` is the first frame. With `start_percent` `0` and `end_percent` `100` the normal `frame_index` / `frame_wrap` controls are used. With any other range the node returns a **random frame inside the range** and ignores `frame_index` for videos. Images ignore the range. Must not be greater than `end_percent`. |
+| `end_percent` | `100` | **Videos only.** End of the frame range as a percentage; `100` is the last frame. The range is inclusive: `start_percent` `25` and `end_percent` `75` on a 100-frame video picks a random frame from `25` to `74`. Must not be less than `start_percent`. |
+| `max_seconds_per_file` | `0` | Optional **effort limit per file** in seconds. Opening, probing, frame counting and frame decoding are checked against it; when the time is exceeded, the node skips the file and tries the next matching file (wrapping only when `media_wrap` is on). `0` = no limit. Use it to stop one slow or damaged video from stalling the queue. |
+| `skip_unknown_frame_count` | off | **On:** a video whose container does not store its frame count is ignored, and the next matching file is tried (starting at `media_index`, wrapping only when `media_wrap` is on). This avoids decoding a whole file just to count its frames. **Off:** such a video is decoded once to count its frames. A file that cannot be opened at all is still reported as a decoder error. Images always have a known count and are never skipped. |
+
+**Outputs**
+
+| Output | Content |
+|--------|---------|
+| `image` | The chosen video frame or still image as a ComfyUI `IMAGE` (`1 × height × width × 3`, RGB, floats `0..1`). When `errors` is not empty, this is a `1 × 1` black placeholder so the nodes after it still run. |
+| `frame_rate` | Frames per second reported by the video (`FLOAT`). `0.0` for a still image or when the file does not contain this information. |
+| `frame_count` | Total number of frames in the chosen file (`INT`). This is the number used by the frame wrap-around check; a still image has one frame. |
+| `media_file` | **Full path of the video or image that supplied the frame** (`STRING`), including the file name. When `path` is a folder, it tells which scanned file was used; it can be passed on, for example to another node or as a caption. |
+| `file_name` | **File name only** of the video or image that supplied the frame (`STRING`), without folders. It includes the extension when `include_suffix` is on and is only the base name when it is off (`clip.mp4` → `clip`). |
+| `errors` | Empty when the frame was read. Otherwise the message (always starting with `[Media Frame]`); it is also printed in the console, so problems are visible even when the output is not connected. Errors never stop the run unless `stop_on_error` is on. |
+
+### Images
+
+Still images are read as a single frame:
+
+- **Supported image extensions:** `.png`, `.jpg`, `.jpeg`, `.jpe`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.tga`, `.ppm`, `.pgm`, `.pbm`, `.pcx`, `.ico`, `.avif`, `.jxl`. `GIF` is treated as a video, so it is not in the image filter.
+- **Reading:** Pillow is used first and applies the EXIF orientation, so a phone photo is returned upright. PyAV and then OpenCV are fallbacks for formats Pillow cannot open. Alpha is dropped and greyscale is repeated into three channels, so the output is always RGB.
+- **Frame values:** `frame_index` `0`, `frame_count` `1`, `frame_rate` `0.0`. A non-zero `frame_index` wraps to `0` when `frame_wrap` is on; with `frame_wrap` off it is reported as out of range.
+- **Percentage range:** ignored for images; `start_percent` / `end_percent` only affect videos. They are still validated, so an invalid range is reported even when the chosen file is an image.
+
+### Path checks and scanning
+
+The path is checked before anything is decoded. A problem is written to the `errors` output and printed in the console instead of stopping the run (unless `stop_on_error` is on); the message starts with `[Media Frame]`:
+
+- **Empty path:** asks for an image or video file, or a folder.
+- **Path not found:** shows every location it tried (the working directory and the `input` folder for a relative path).
+- **File does not match `media_type`:** names the filter and points at the `Other` option.
+- **Folder without matching files:** says whether subfolders were searched, and suggests changing `media_type` or switching `recursive` on.
+- **Path is neither a file nor a folder:** reports it as such.
+- **Invalid percentage range:** names `start_percent` / `end_percent` and the bad value.
+
+Folder results are in **natural order**, so `clip2` comes before `clip10`. With `recursive` on, the relative path is compared (`sub/clip1` after `clip2`), so files of different subfolders stay in a predictable order. With it off, only the file name is compared. Files are matched by extension, ignoring upper/lower case.
+
+### Choosing a file and a frame
+
+Both indexes are **0-based** and both have two independent options: the *control after generate* of the number field and the matching wrap switch.
+
+- **Control after generate** is ComfyUI's usual menu on the number field: `fixed` keeps the value, `increment` adds one, `decrement` subtracts one, and `randomize` picks a new random value after every queue. The value is a normal widget, so it is saved with the workflow.
+- **`media_wrap` / `frame_wrap`** decide what happens when the value is out of range. On, the index is taken modulo the number of files / frames, so `index 7` with 5 items is item 2 and an incrementing index loops forever. A negative index counts from the end (`-1` is the last item). Off, an out-of-range index stops the run with the valid range in the message.
+
+Examples:
+
+| Path | `media_index` | `media_wrap` | Result |
+|------|---------------|--------------|--------|
+| folder with `a.mp4`, `b.png` | `0` | either | `a.mp4` |
+| folder with `a.mp4`, `b.png` | `3` | on | `b.png` (`3 mod 2 = 1`) |
+| folder with `a.mp4`, `b.png` | `-1` | on | `b.png` |
+| folder with `a.mp4`, `b.png` | `3` | off | error: 2 files found, valid indexes are 0 to 1 |
+
+A typical frame-walking setup: leave `frame_wrap` on and the percentage range at `0` / `100`, set `frame_index` to `0`, choose *increment* in its control-after-generate menu, and queue the workflow. Each run returns the next frame, and after the last frame the next queue starts again at frame 0.
+
+### Percentage range (videos)
+
+`start_percent` and `end_percent` choose which part of a video may supply the frame:
+
+- **Full range (`0` / `100`, the default):** the normal `frame_index` and `frame_wrap` controls are used, so existing frame-walking workflows do not change.
+- **Narrowed range (anything else):** a **random frame** is chosen inside the range on every queue, and `frame_index` / `frame_wrap` are ignored for videos. The range is inclusive: the first frame is the one at `start_percent`, the last is the one just before `end_percent` (or the final frame at `100`). A collapsed range such as `50` / `50` always returns one fixed frame.
+- **Images:** the range is ignored because an image has only one frame.
+- **Console:** each narrowed-range run prints the chosen frame, for example `[Media Frame] random frame 37 of 100 (range 25%..75% = frames 25..74)`.
+- **Caching:** a narrowed range makes `IS_CHANGED` return `NaN`, so ComfyUI runs the node again on every queue and a new random frame is rolled even with `cache` on. The folder scan is still reused while the scan settings are unchanged. With the full range, `cache` behaves as before.
+- **Validation:** both values must be numbers from `0` to `100`, and `start_percent` must not be past `end_percent`. An invalid range is reported before anything is decoded, for example `[Media Frame] start_percent (80) is past end_percent (20)...`.
+
+Examples for a 100-frame video:
+
+| `start_percent` | `end_percent` | Result |
+|-----------------|---------------|--------|
+| `0` | `100` | `frame_index` / `frame_wrap` pick the frame |
+| `25` | `75` | random frame from `25` to `74` |
+| `50` | `50` | frame `50` |
+| `80` | `20` | error: start is past the end |
+
+### Videos without a stored frame count
+
+Most MP4, MOV and WebM files store their frame count in the container, so `frame_count` is known without reading the video. Some formats and streams do not (for example many MPEG-TS files), and then the node normally decodes the whole file once to count the frames. That is correct, but it can be slow for long videos.
+
+`skip_unknown_frame_count` chooses the alternative:
+
+- **On:** matching videos whose container does not store an exact frame count are skipped, and the next scanned file is used. The search starts at `media_index` and moves forward through the natural scan order; it wraps around to the first file only when `media_wrap` is on. The console prints `[Media Frame] skipping ...` for each skipped file. If none of the checked videos stores its frame count, the message is written to `errors` and `image` is a `1 × 1` black placeholder.
+- **Off (default):** the video is decoded once to count its frames and the run continues, exactly as before.
+
+The toggle only affects videos that open correctly but lack a stored frame count. A missing or unreadable file still reports the decoder error, and `media_wrap` / `frame_wrap` keep their usual meaning. Images are never skipped. With `cache` on, the video is only probed when the node actually runs (for example after an index step); the folder scan itself can also be cached, so stepping through frames does not repeatedly walk the folder.
+
+### Speed and the effort limit
+
+Two things keep frame acquisition fast:
+
+- **Seeking for distant frames.** PyAV opens the file, seeks to the keyframe at or before the requested time, and decodes only the short distance to the target frame. Without this, a random frame deep in a long video would decode every frame from the start. Short distances (the first `60` frames) still decode linearly, and a file whose seek or timestamps fail falls back to the linear decode, so the result stays correct. The frame is found from the decoded timestamps, which is exact for normal constant-frame-rate videos and at most about one frame away for unusual variable-frame-rate files.
+- **The `max_seconds_per_file` effort limit.** The clock starts for each candidate file and covers opening, probing, frame counting and decoding the chosen frame. When the limit is reached, the node prints which file was skipped and tries the next scanned file, in the same order as `media_index` (wrapping only when `media_wrap` is on). A file that is skipped this way never becomes the output. With `max_seconds_per_file` `0` (the default) there is no limit and a slow file simply takes as long as it needs.
+
+Example: point `path` at a folder, set `max_seconds_per_file` to `10`, and leave `media_wrap` on. A damaged or unusually slow clip is skipped after ten seconds and the next file is used; if every file in the scanned range takes longer than ten seconds, the run stops with a message that says how many were tried. Images are normally far below the limit; if an image does reach it, it is skipped like a video.
+
+Skipping and effort limits do not change `media_file` or `file_name`: the outputs always name the file that actually supplied the frame, so a skipped file is never reported as the source.
+
+### Cache
+
+The `cache` switch decides whether ComfyUI may reuse a previous result when the node's settings have not changed, and whether the result of a folder scan may be reused:
+
+- **On (default):** `IS_CHANGED` returns a stable value, so ComfyUI skips the node while `path`, the filter, the toggles, the indexes and the percentage range are unchanged. The frame is not decoded again.
+- **On (default), narrowed percentage range:** `IS_CHANGED` returns `NaN` so a new random video frame is chosen on every queue. The folder scan and the matching cache still apply.
+- **On (default), folder scan:** the list of matching files is remembered per path, file-type filter and `recursive` setting (up to 64 combinations), so stepping through frames or files with *increment* does not walk the folder again on every queue. A scan is only repeated when the path, the filter or `recursive` changes, or when ComfyUI restarts.
+- **Off:** `IS_CHANGED` returns `NaN` (which never equals itself), so ComfyUI runs the node again on every queue and each run scans the folder from scratch. The fresh list also replaces the remembered one, so a later cached run uses it. Use this when a file is overwritten *at the same path* (a render that is still being updated, a folder that receives new files) and the node should notice it without any widget changing.
+
+Changing a widget still makes ComfyUI run the node in both modes; `cache` only affects runs where nothing changed. The frame is read from disk each time the node actually runs, so a replaced file is picked up on the next run. New or removed files in a folder are only noticed by a fresh scan: switch `cache` off for a run (or restart ComfyUI), then switch it back on.
+
+### Decoders
+
+Still images are decoded with **Pillow** first (including EXIF orientation), then PyAV and OpenCV as fallbacks. Video files are decoded with **PyAV** (`av`) when it is available, and **OpenCV** (`cv2`) is used as a fallback when PyAV cannot open the file. All decoders are imported only when the node runs, so the package can be installed and imported without them. Current ComfyUI ships PyAV, so the node normally works out of the box. Without a video decoder the run stops with:
+
+```text
+[Media Frame] no video decoder is installed. Install PyAV (pip install av) or OpenCV (pip install opencv-python) ...
+```
+
+Install one of them into the Python environment that runs ComfyUI, then restart ComfyUI. If a video cannot be opened by either decoder, the message includes both decoder errors.
+
+- **Frame rate** is the stream's average / guessed rate. When the container does not store it, the node estimates it from the duration and the frame count; when that is not possible either, `frame_rate` is `0.0`. A still image always reports `0.0`.
+- **Frame count** uses the value stored in the container when there is one. If the file does not store an exact count, the node either decodes the video once to count the frames (the default, printing `[Media Frame] the file does not store its frame count; counting frames in ...`) or, with `skip_unknown_frame_count` on, skips that video and tries the next one (see [Videos without a stored frame count](#videos-without-a-stored-frame-count)). Counting can take a moment for long videos; with `cache` on it happens only when the settings change. A still image has one frame.
+- **Image format:** the node always outputs RGB, so a grayscale video or image is repeated into three channels and an alpha channel is dropped. Audio is ignored.
+- **Errors are reported, not raised, by default.** The message goes to the `errors` output and the console, and `image` is a `1 × 1` black placeholder with `frame_rate` `0.0`, `frame_count` `0` and an empty `media_file` / `file_name`. Downstream nodes therefore still run, and the message can be shown by connecting `errors` to a text preview. Switch `stop_on_error` on to make the first problem stop the run instead.
+
+
+---
+
 ## TxtReadFile
 
 Reads a text file and outputs all of it, one chosen line, or a random line. The node has **no sockets**: type (or paste) the path of the file into its `path` field and choose what to read.
@@ -792,13 +940,21 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 | TxtReadFile gives an empty text | Look at its `errors` output (or the console): it names the problem and the path it tried. In **specific line** mode, a blank line is a valid empty text; otherwise check that the line number is not out of range (the message says how many lines the file has) or switch on **wrap**. **Random line** mode can also pick a blank line, and an empty file has no line to read. Relative paths are looked up from ComfyUI's working directory and then its `input` folder; use an absolute path if unsure. Also check that `TXTREADFILE_ALLOWED_DIRS` is not set to other folders. |
 | ListFiles outputs nothing or an empty path | Look at its `errors` output: no files with that suffix, a wrong folder, or an index out of range with `wrap` off. `count` shows how many files matched. |
 | TxtWriteFile "does nothing" on a second queue | In **overwrite** mode ComfyUI skips the node while text, path and settings are unchanged. Use **append** mode if every queue should write, or change the text. Relative paths are saved in ComfyUI's **output** folder. |
-| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-11-03.1) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-11-03.1)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
+| Blank lines disappear although **Remove empty lines** is unticked | Check the startup log: it must show **one** line `[MultiTabText] Python side loaded (build 2026-11-06.6) from ...`. A `WARNING: another copy ...` line, a different build, or two such lines mean an old package is overriding this one: delete it and restart. In the browser console (F12) the matching line is `frontend extension loaded (build 2026-11-06.6)`. To see what each run receives, start ComfyUI with the environment variable `MULTITABTEXT_DEBUG=1`; every run then prints `removeEmptyLines=...` and the line counts in and out. |
 | MultiTabModels CLIP skip does nothing | Tick **use** under **Load Checkpoint** and choose a layer below `-1`. `-1` is the last layer and therefore changes nothing; `-2` skips one layer. It applies to the tab's final CLIP, including a separate **Load CLIP**. When LoRA Manager's **Send params to workflow** carries Clip Skip, it enables the setting for the active tab automatically. |
 | CLIP skip from "Send params to workflow" is not applied | Current public LoRA Manager displays Clip Skip but does not include it in the send request. Apply `patches/lora-manager-send-clip-skip.patch` in the LoRA Manager folder, restart ComfyUI, and hard-refresh the LoRA Manager tab. In the browser console (F12, *Verbose*) the send should then show `[MultiTabText] LoRA Manager sent clip_skip = ...`. Without the patch, use the node's own CLIP skip control. The value must be a number: `0` disables CLIP skip, `1` means the last layer, and `2` skips one layer. |
 | `%model%` stays as it is, or `%model_type%` is `unknown` | Check the console: the node prints a warning once when no checkpoint / diffusion model was found or when a placeholder name is unknown. The model must be reachable from the sampler that uses the text, otherwise the nearest loader is used. If a new model was renamed to a generic file, keep its family name in the folder (for example `Anima/model.safetensors`), or connect its separate CLIP and VAE loaders so the loader hints can identify it. With LoRA Manager installed, `%model_base%` / `%model_title%` need its checkpoint cache to be filled. |
 | Image Add Text: a font is missing from the drop-down | Put the `.ttf` / `.otf` / `.ttc` / `.otc` file into the `fonts/` folder next to `image_text.py` or into ComfyUI's fonts folder, then restart ComfyUI. The list is built when the node is created. |
 | Image Add Text: the text looks tiny and blocky | The selected font could not be loaded and Pillow's built-in font was used. The console prints `[Image Add Text] could not load font ...`; pick another font. |
 | Image Add Text: a later node does not accept the image | The `image` output is RGBA by default. Switch **output_alpha** to *RGB output*, or insert a node that handles 4 channels. The `alpha` MASK output is independent of that switch. |
+| Media Frame: `no video decoder is installed` | Install PyAV (`pip install av`) or OpenCV (`pip install opencv-python`) in the Python environment that runs ComfyUI, then restart ComfyUI. Current ComfyUI already ships PyAV. Images use Pillow, which ships with ComfyUI. |
+| Media Frame: `path not found`, or a file does not match the filter | Check the spelling and use an absolute path if unsure; relative paths are looked up from ComfyUI's working directory and then its `input` folder. A file path is also checked against `media_type`, so an `.mp4` or `.png` needs a filter that includes its extension, or use `Other` and type it. |
+| Media Frame: `media_index` / `frame_index` is out of range | The message says how many files or frames were found and the valid range. Switch the matching wrap option on, or lower the index. Remember that both indexes start at `0`, and that the *control after generate* may have moved the value between queues. |
+| Media Frame: the first run takes long, or `frame_rate` is `0.0` | A container without an exact frame count is decoded once to count the frames (the console says so); with `cache` on this only happens when the settings change. Switch `skip_unknown_frame_count` on to skip such files instead, set `max_seconds_per_file` to move on after a slow file, or accept the one-time counting pass. A `frame_rate` of `0.0` means the file does not store a frame rate and it could not be estimated. |
+| Media Frame: `none of the ... files checked stores its frame count` | `skip_unknown_frame_count` is on and every file in the searched range lacks a stored frame count. Switch it off to count frames by decoding, or choose another `path` / `media_index`. The console lists each skipped file. |
+| Media Frame: `no media could be read within ... s per file` | `max_seconds_per_file` is on and every tried file took longer. Raise the limit, switch `skip_unknown_frame_count` off (it may be skipping the remaining files), choose another `path` / `media_index`, or set the limit to `0` to disable it. |
+| Media Frame: the image is a 1 × 1 black square | The `errors` output is not empty: the run reported a problem instead of a frame. Connect `errors` to a text preview (or look at the console) to see the message, then fix the path, filter, range, decoder or effort limit. The other outputs are empty in that case (`frame_rate` `0.0`, `frame_count` `0`, empty `media_file` / `file_name`). Switch `stop_on_error` on if the problem should fail the run instead. |
+| Media Frame: new or deleted files in a folder are not noticed | With `cache` on, the folder scan result is reused to avoid walking the folder again. Switch `cache` off for one run (which rescans and refreshes the list), then switch it back on, or restart ComfyUI. A replaced file at the same path is still read again whenever the node runs. |
 | Lora Text Loader removes the tag but does not change the model | The console names the reason: the LoRA is not in `models/loras`, its name is empty, or a strength is not a number. Matching ignores case and accepts the file name, its stem, a path or the beginning of a name. The last part is the clip strength only when four values are written: `<lora:name:model:clip>`. |
 | Lora Text Loader prints `loaded ...` on every queue | That is expected only when something really changed: a new tag, the tag order, a strength, the checkpoint, or the LoRA file (its modification time or size). With only ordinary prompt text changing (random selectors, model placeholders), the node reuses the already patched model and prints `reusing ... already applied LoRA(s): ...` instead. Removing a tag prints `unloaded ... no longer in the text: ...`, and the LoRAs after it are applied again. Only the last fifteen MODEL / CLIP pairs are remembered, so alternating between more than fifteen checkpoints reloads their LoRAs. |
 | Nodes appear twice | An old copy of the package is still in `custom_nodes`. Remove it. |
@@ -806,7 +962,7 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 
 ## Notes
 
-- Saved workflows keep working across updates because the internal node IDs are unchanged: `RandomTextTabs`, `RemoveTags`, `LoraTextLoader`, `MultiTabTextResolutionSelector`, `MultiTabTextImageAddText`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. Their display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader`, `Resolution Selector (MultiTabText)`, `Image Add Text (MultiTabText)`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. The built-in ComfyUI `ResolutionSelector` is left untouched.
+- Saved workflows keep working across updates because the internal node IDs are unchanged: `RandomTextTabs`, `RemoveTags`, `LoraTextLoader`, `MultiTabTextResolutionSelector`, `MultiTabTextImageAddText`, `MultiTabTextMediaFrame`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. Their display names are `MultiTabText`, `MultiTabText Remove Tags`, `Lora Text Loader`, `Resolution Selector (MultiTabText)`, `Image Add Text (MultiTabText)`, `Media Frame (MultiTabText)`, `MultiTabModels`, `TxtReadFile`, `TxtWriteFile` and `ListFiles`. The built-in ComfyUI `ResolutionSelector` is left untouched. The old **Video Frame** node was renamed to **Media Frame** and its internal ID changed from `MultiTabTextVideoFrame` to `MultiTabTextMediaFrame`: workflows saved with the old node need it added again and re-wired.
 - The editor is a custom web widget. Its tab data is stored in a hidden field called `tabs_data` and travels with the workflow.
 - Model placeholders and `@if` blocks need no sockets and no extra packages. They use ComfyUI's hidden `PROMPT` input, which every node receives anyway, so existing workflows and node layouts stay unchanged.
 
@@ -821,6 +977,8 @@ Unlike MultiTabText there is no per-tab output checkbox: model outputs cannot be
 **Resolution Selector (MultiTabText):** outputs `width` and `height` as integers from a common aspect ratio and a megapixel target (the same math as ComfyUI's built-in Resolution Selector, both sides multiples of a chosen value), from a model-recommended preset for SD 1.5, SDXL, Pony, Illustrious, Krea 2, MOSS Image or Anima, or from a width and height typed by hand, with a toggle to round the manual values to the multiple or leave them unchanged, a **flip** option that swaps width and height in every mode, hover tooltips on all inputs and outputs, and regular number fields for the numeric settings. It expands ComfyUI's built-in Resolution Selector without replacing it.
 
 **Image Add Text (MultiTabText):** draws multi-line text onto every image of a batch with a font picked from ComfyUI's fonts, a `fonts` folder next to the node or the system fonts; font size, palette colours with alpha (or custom hex / CSS / `rgba(...)`), outline colour and width, position, a text box (0 = automatic size) with wrapping, left / center / right alignment and top / middle / bottom vertical alignment, an optional background fill (transparent by default) and clipping to a fixed height; outputs the image as RGBA or RGB, the drawn text and the alpha channel as a MASK.
+
+**Media Frame (MultiTabText):** reads one frame from an image or video file, or from a folder of media files: a checked path field (relative paths resolved from the working directory and then the `input` folder), an all-media / all-video / all-image / per-format / custom-extension filter, optional recursive scanning, cached or fresh reads (with the folder scan itself cached so stepping through frames does not re-walk the folder), a `media_index` and a `frame_index` (both 0-based with ComfyUI's *control after generate*), separate wrap-around switches (negative indexes count from the end), a video-only `start_percent` / `end_percent` range that picks a random frame inside it, a per-file `max_seconds_per_file` effort limit that skips slow files and tries the next one, and an option to skip videos whose container does not store a frame count; images are read with Pillow (EXIF orientation applied) and count as one frame, videos use PyAV with seeking for distant frames and fall back to OpenCV; outputs the frame as an RGB image, the frame rate, the frame count, the full path, the file name with an optional suffix, and an `errors` text (a `1 × 1` placeholder image when an error is reported, so the run never stops by default; a `stop_on_error` switch makes errors fatal instead).
 
 **ListFiles:** lists a folder's files (natural order, optional suffix filter, no sub folders / hidden files), outputs one by `index` (wrap-around option, *control after generate* for stepping through the folder) or all as a list, plus a joined text, the match count and an `errors` text.
 

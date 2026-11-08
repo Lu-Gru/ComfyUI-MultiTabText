@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCommentToggle, installCommentToggleOnWidget } from "./comment_toggle.js";
 
-console.log("[MultiTabText] frontend extension loaded (build 2026-11-03.1)");
+console.log("[MultiTabText] frontend extension loaded (build 2026-11-06.6)");
 
 const NODE_NAME = "RandomTextTabs";
 const DATA_WIDGET = "tabs_data";
